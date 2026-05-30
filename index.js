@@ -3520,12 +3520,12 @@ async function fetchStock(options = {}) {
 
 async function fetchFreshStock() {
   const tasks = [
-    { priority: 130, label: "FruityBlox in-game shop", run: fetchFruityBloxStock },
     ...config.stockApiUrls.map((url) => ({
-      priority: 100,
+      priority: 150,
       label: `API configurada: ${url}`,
       run: () => fetchConfiguredStock(url),
     })),
+    { priority: 130, label: "FruityBlox in-game shop", run: fetchFruityBloxStock },
     { priority: 90, label: "BloxInformer live", run: fetchBloxInformerStock },
     { priority: 80, label: "BloxFruitsCalc structured data", run: fetchBloxFruitsCalcStock },
     { priority: 60, label: "Blox Fruits Wiki via Fandom API", run: fetchFandomStock },
@@ -3566,10 +3566,12 @@ async function fetchFruityBloxStock() {
     method: "POST",
     headers: {
       Accept: "text/x-component",
+      "Cache-Control": "no-cache",
       "Content-Type": "text/plain;charset=UTF-8",
       "Next-Action": actionId,
       "Next-Router-State-Tree": FRUITYBLOX_ROUTER_STATE_TREE,
       Origin: "https://fruityblox.com",
+      Pragma: "no-cache",
       Referer: FRUITYBLOX_STOCK_URL,
       "User-Agent": "VoidLegionsDiscordBot/1.0",
     },
@@ -3591,7 +3593,7 @@ async function getFruityBloxActionId() {
   }
 
   const html = await fetchText(FRUITYBLOX_STOCK_URL, {
-    headers: { "User-Agent": "VoidLegionsDiscordBot/1.0" },
+    headers: { "Cache-Control": "no-cache", Pragma: "no-cache", "User-Agent": "VoidLegionsDiscordBot/1.0" },
     timeoutMs: 12000,
   }).catch(() => "");
 
@@ -3601,7 +3603,7 @@ async function getFruityBloxActionId() {
 
   for (const scriptUrl of scripts.reverse()) {
     const script = await fetchText(scriptUrl, {
-      headers: { "User-Agent": "VoidLegionsDiscordBot/1.0" },
+      headers: { "Cache-Control": "no-cache", Pragma: "no-cache", "User-Agent": "VoidLegionsDiscordBot/1.0" },
       timeoutMs: 8000,
     }).catch(() => "");
     const match = script.match(/"([a-f0-9]{32,})"[\s\S]{0,240}getStock/);
@@ -3938,10 +3940,22 @@ function scheduleNextStockRotationPost() {
   const next = nextStockRotationDate();
   const delay = Math.max(1000, next.getTime() - Date.now() + 8000);
   stockRotationTimer = setTimeout(async () => {
-    await postStockIfChanged(true);
+    await pollStockAfterRotation();
     scheduleNextStockRotationPost();
   }, delay);
   console.log(`[STOCK] Proxima checagem de rotacao agendada para ${next.toISOString()}`);
+}
+
+async function pollStockAfterRotation(attempt = 0, previousHash = lastStockHash) {
+  await postStockIfChanged(attempt === 0);
+  const changed = lastStockHash && lastStockHash !== previousHash;
+  if (changed || attempt >= 12) return;
+
+  setTimeout(() => {
+    pollStockAfterRotation(attempt + 1, previousHash).catch((error) => {
+      console.error("[STOCK]", error.message);
+    });
+  }, 30 * 1000);
 }
 
 function nextStockRotationDate() {
