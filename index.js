@@ -1667,9 +1667,14 @@ async function submitApplication(interaction, application) {
     button(`review_deny:${interaction.user.id}:none`, "Recusar", ButtonStyle.Danger, "deny", interaction.guild),
     button(`review_call:${interaction.user.id}:none`, "Enviar DM", ButtonStyle.Secondary, "support", interaction.guild),
   );
+  const mentionPayload = applicationMentionPayload(interaction, application);
 
   let sent = false;
-  await channel.send({ embeds: [embed], components: [row] }).then(() => {
+  await channel.send({
+    ...mentionPayload,
+    embeds: [embed],
+    components: [row],
+  }).then(() => {
     sent = true;
   }).catch(async (error) => {
     console.warn(`[WARN] Nao consegui enviar aplicacao para analise: ${error.message}`);
@@ -1680,6 +1685,21 @@ async function submitApplication(interaction, application) {
     applicationCooldowns.set(cooldownKey, Date.now() + config.applicationCooldownMinutes * 60 * 1000);
   }
   await safeEditReply(interaction, `Sua aplicacao foi enviada para analise em ${channel}. Boa sorte.`);
+}
+
+function applicationMentionPayload(interaction, application) {
+  const roleId = normalizeSnowflake(application.roleId);
+  if (!roleId) {
+    return {
+      content: `${interaction.user}`,
+      allowedMentions: { users: [interaction.user.id], roles: [] },
+    };
+  }
+
+  return {
+    content: `Novo formulario de **${application.kind}**: <@&${roleId}> | Candidato: ${interaction.user}`,
+    allowedMentions: { roles: [roleId], users: [interaction.user.id] },
+  };
 }
 
 async function resolveApplicationDestination(interaction, application, answers, roblox) {
