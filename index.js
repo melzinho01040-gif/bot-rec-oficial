@@ -85,7 +85,7 @@ const client = new Client({
   ].filter(Boolean),
 });
 
-let lastStockHash = "";
+let lastStockHashes = { normal: "", mirage: "" };
 let stockSchedulerStarted = false;
 let stockRotationTimer = null;
 let stockCache = null;
@@ -919,12 +919,11 @@ async function handleCommand(interaction) {
     const stock = await fetchStock({ force: true });
     const store = guildData(interaction.guildId);
     store.stockChannelId = targetChannel.id;
-    const message = await upsertStockMessage(targetChannel, store, stock);
-    store.stockMessageId = message.id;
+    const messages = await upsertStockMessages(targetChannel, store, stock, ["normal", "mirage"]);
     scheduleDataSave();
-    lastStockHash = stockHash(stock);
+    updateLastStockHashes(stock, ["normal", "mirage"]);
     ensureStockSchedulerStarted(false);
-    await safeEditReply(interaction, `Stock configurado em ${targetChannel}. A partir de agora eu vou editar a mesma mensagem: ${message.url}`);
+    await safeEditReply(interaction, `Stock configurado em ${targetChannel}. Agora eu edito mensagens separadas: Normal ${messages.normal?.url || "sem dados"} | Mirage ${messages.mirage?.url || "sem dados"}.`);
     return;
   }
 
@@ -2124,7 +2123,22 @@ function findPendingCrewRole(member) {
   if (!member?.roles?.cache) return null;
   const configured = normalizeSnowflake(config.pendingCrewRoleId);
   if (configured && member.roles.cache.has(configured)) return member.roles.cache.get(configured);
-  return member.roles.cache.find((role) => normalizeKey(role.name) === normalizeKey("Parte da crew")) || null;
+  const names = [
+    "parte da crew",
+    "entrar na crew",
+    "entrada na crew",
+    "quer entrar na crew",
+    "recrutamento",
+    "pendente crew",
+  ].map(roleSearchKey);
+  return member.roles.cache.find((role) => {
+    const key = roleSearchKey(role.name);
+    return names.some((name) => key === name || key.includes(name));
+  }) || null;
+}
+
+function roleSearchKey(value) {
+  return normalizeKey(value).replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function eventStyleEmbed(guild, color = config.color) {
@@ -2793,8 +2807,8 @@ function stockBaseEmbed(guild) {
     .setAuthor({ name: config.stockBrandName || config.brandName, iconURL: config.stockLogoUrl || config.logoUrl || undefined });
 }
 
-async function stockMessagePayload(stock, guild) {
-  const visual = await stockVisualPayload(stock, guild).catch((error) => {
+async function stockMessagePayload(stock, guild, kind = "") {
+  const visual = await stockVisualPayload(stock, guild, kind).catch((error) => {
     console.warn(`[STOCK_IMAGE] ${error.message}`);
     return null;
   });
@@ -2809,19 +2823,20 @@ async function stockMessagePayload(stock, guild) {
   }
 
   return {
-    content: stockUpdateContent(stock, guild),
-    embeds: stockCleanFallbackEmbeds(stock, guild),
+    content: stockUpdateContent(stock, guild, kind),
+    embeds: stockCleanFallbackEmbeds(stock, guild, kind),
     components: [],
   };
 }
 
-async function stockVisualPayload(stock, guild) {
+async function stockVisualPayload(stock, guild, kind = "") {
   if (!sharp) return null;
 
   const sections = [
     { key: "normal", title: "Normal Stock", items: stockItemsForKind(stock, "Normal", stock.normal) },
     { key: "mirage", title: "Mirage Stock", items: stockItemsForKind(stock, "Mirage", stock.mirage) },
-  ].filter((section) => section.items.length);
+  ].filter((section) => section.items.length)
+    .filter((section) => !kind || section.key === kind);
 
   if (!sections.length) return null;
 
@@ -2854,9 +2869,9 @@ function stockSectionEmbed(guild, section, nextClock, filename) {
     .setImage(`attachment://${filename}`);
 }
 
-function stockCleanFallbackEmbeds(stock, guild) {
+function stockCleanFallbackEmbeds(stock, guild, kind = "") {
   const embeds = [];
-  if (stock.normal?.length) {
+  if ((!kind || kind === "normal") && stock.normal?.length) {
     embeds.push(new EmbedBuilder()
       .setColor(config.color)
       .setDescription([
@@ -2866,7 +2881,7 @@ function stockCleanFallbackEmbeds(stock, guild) {
         stock.normal.join("\n").slice(0, 1000),
       ].join("\n")));
   }
-  if (stock.mirage?.length) {
+  if ((!kind || kind === "mirage") && stock.mirage?.length) {
     embeds.push(new EmbedBuilder()
       .setColor(config.color)
       .setDescription([
@@ -3025,13 +3040,13 @@ function stockFooterText(stock) {
   return `${status} Atualizado <t:${Math.floor((stock.fetchedAt || Date.now()) / 1000)}:R>.${source}`;
 }
 
-function stockUpdateContent(stock, guild) {
+function stockUpdateContent(stock, guild, kind = "") {
   const lines = [];
-  if (stock.normal?.length) {
+  if ((!kind || kind === "normal") && stock.normal?.length) {
     lines.push(`${emo(guild, "normal") || "📦"} Normal Stock Atualizado!`);
-    lines.push(`${emo(guild, "clock") || "⏳"} Proxima atualizacao: **${nextRotationClock(4)}**`);
+    lines.push(`${emo(guild, "clock") || "⏳"} Proxima atualizacao: **${nextStockRotationClock("normal")}**`);
   }
-  if (stock.mirage?.length) {
+  if ((!kind || kind === "mirage") && stock.mirage?.length) {
     lines.push(`${emo(guild, "mirage") || "🌌"} Mirage Stock Atualizado!`);
     lines.push(`${emo(guild, "clock") || "⏳"} Proxima atualizacao: **${nextStockRotationClock("mirage")}**`);
   }
@@ -3343,12 +3358,13 @@ function guildData(guildId) {
   store.inviteMembers ||= {};
   store.stockChannelId ||= "";
   store.stockMessageId ||= "";
+  store.stockMessageIds ||= {};
   store.auditLogChannelId ||= "";
   return store;
 }
 
 function normalizeKey(value) {
-  return String(value || "").trim().toLowerCase();
+  return stripAccents(String(value || "")).trim().toLowerCase();
 }
 
 function registerCrewMember(guildId, user, roblox, addedBy) {
@@ -3922,6 +3938,19 @@ function stockHash(stock) {
   });
 }
 
+function stockKindHash(stock, kind) {
+  return JSON.stringify({
+    items: kind === "mirage" ? (stock.mirage || []) : (stock.normal || []),
+    stale: Boolean(stock.stale),
+  });
+}
+
+function updateLastStockHashes(stock, kinds = ["normal", "mirage"]) {
+  for (const kind of kinds) {
+    lastStockHashes[kind] = stockKindHash(stock, kind);
+  }
+}
+
 function stockSoftExpireAt() {
   if (config.stockCacheMinutes <= 0) return Date.now();
   return Math.min(nextStockRotationDate().getTime() + 60 * 1000, Date.now() + config.stockCacheMinutes * 60 * 1000);
@@ -3937,31 +3966,37 @@ function ensureStockSchedulerStarted(immediate = true) {
 
 function scheduleNextStockRotationPost() {
   if (stockRotationTimer) clearTimeout(stockRotationTimer);
-  const next = nextStockRotationDate();
-  const delay = Math.max(1000, next.getTime() - Date.now() + 8000);
+  const next = nextStockRotationInfo();
+  const delay = Math.max(1000, next.date.getTime() - Date.now() + 8000);
   stockRotationTimer = setTimeout(async () => {
-    await pollStockAfterRotation();
+    await pollStockAfterRotation(next.kind);
     scheduleNextStockRotationPost();
   }, delay);
-  console.log(`[STOCK] Proxima checagem de rotacao agendada para ${next.toISOString()}`);
+  console.log(`[STOCK] Proxima checagem de rotacao ${next.kind} agendada para ${next.date.toISOString()}`);
 }
 
-async function pollStockAfterRotation(attempt = 0, previousHash = lastStockHash) {
-  await postStockIfChanged(attempt === 0);
-  const changed = lastStockHash && lastStockHash !== previousHash;
+async function pollStockAfterRotation(kind, attempt = 0, previousHash = lastStockHashes[kind] || "") {
+  await postStockIfChanged(attempt === 0, kind);
+  const changed = lastStockHashes[kind] && lastStockHashes[kind] !== previousHash;
   if (changed || attempt >= 12) return;
 
   setTimeout(() => {
-    pollStockAfterRotation(attempt + 1, previousHash).catch((error) => {
+    pollStockAfterRotation(kind, attempt + 1, previousHash).catch((error) => {
       console.error("[STOCK]", error.message);
     });
   }, 30 * 1000);
 }
 
 function nextStockRotationDate() {
+  return nextStockRotationInfo().date;
+}
+
+function nextStockRotationInfo() {
   const normal = nextStockKindDate("normal");
   const mirage = nextStockKindDate("mirage");
-  return normal.getTime() <= mirage.getTime() ? normal : mirage;
+  return normal.getTime() <= mirage.getTime()
+    ? { kind: "normal", date: normal }
+    : { kind: "mirage", date: mirage };
 }
 
 function hasStockTargets() {
@@ -3978,22 +4013,23 @@ function stockTargetChannelIds() {
   return [...ids];
 }
 
-async function postStockIfChanged(firstRun) {
+async function postStockIfChanged(firstRun, kind = "") {
   try {
     const channelIds = stockTargetChannelIds();
     if (!channelIds.length) return;
 
     const stock = await fetchStock({ force: true });
-    const hash = stockHash(stock);
-    if (!firstRun && hash === lastStockHash) return;
+    const kinds = kind ? [kind] : ["normal", "mirage"];
+    const changedKinds = kinds.filter((item) => firstRun || stockKindHash(stock, item) !== lastStockHashes[item]);
+    if (!changedKinds.length) return;
 
-    lastStockHash = hash;
+    updateLastStockHashes(stock, changedKinds);
     for (const channelId of channelIds) {
       const channel = await client.channels.fetch(channelId).catch(() => null);
       if (!channel?.isTextBased?.()) continue;
       const store = guildData(channel.guild.id);
       if (!store.stockChannelId) store.stockChannelId = channel.id;
-      await upsertStockMessage(channel, store, stock).catch((error) => {
+      await upsertStockMessages(channel, store, stock, changedKinds).catch((error) => {
         console.error(`[STOCK] Nao consegui atualizar em ${channelId}: ${error.message}`);
       });
     }
@@ -4003,9 +4039,20 @@ async function postStockIfChanged(firstRun) {
   }
 }
 
-async function upsertStockMessage(channel, store, stock) {
-  const payload = await stockMessagePayload(stock, channel.guild);
-  const messageId = normalizeSnowflake(store.stockMessageId);
+async function upsertStockMessages(channel, store, stock, kinds = ["normal", "mirage"]) {
+  const result = {};
+  store.stockMessageIds ||= {};
+  for (const kind of kinds) {
+    if (!stockHasKind(stock, kind)) continue;
+    result[kind] = await upsertStockMessage(channel, store, stock, kind);
+  }
+  return result;
+}
+
+async function upsertStockMessage(channel, store, stock, kind) {
+  const payload = await stockMessagePayload(stock, channel.guild, kind);
+  store.stockMessageIds ||= {};
+  const messageId = normalizeSnowflake(store.stockMessageIds[kind] || "");
 
   if (messageId) {
     const message = await channel.messages.fetch(messageId).catch(() => null);
@@ -4016,8 +4063,12 @@ async function upsertStockMessage(channel, store, stock) {
   }
 
   const message = await channel.send(payload);
-  store.stockMessageId = message.id;
+  store.stockMessageIds[kind] = message.id;
   return message;
+}
+
+function stockHasKind(stock, kind) {
+  return kind === "mirage" ? Boolean(stock.mirage?.length) : Boolean(stock.normal?.length);
 }
 
 function normalizeStock(data) {

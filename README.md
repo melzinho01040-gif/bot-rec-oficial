@@ -118,3 +118,7 @@ Convide o bot com `applications.commands`, `bot` e permissoes de:
 - Read Message History
 
 O cargo do bot precisa ficar acima dos cargos que ele vai aplicar ou moderar.
+
+Para a troca automatica na aprovacao, configure `PART_CREW_ROLE_ID` com o ID do cargo temporario, ou use um nome parecido com `Parte da crew` / `Entrar na crew`. O bot remove esse cargo e aplica o cargo aprovado.
+
+O stock automatico usa mensagens separadas para Normal e Mirage. Depois de atualizar para esta versao, rode `/setup-stock` uma vez de novo para criar/registrar as duas mensagens separadas.
