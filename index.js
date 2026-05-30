@@ -66,7 +66,7 @@ const config = {
   stockCacheMinutes: clamp(Number(process.env.STOCK_CACHE_MINUTES || 2), 0, 15),
   stockCacheMaxStaleHours: clamp(Number(process.env.STOCK_CACHE_MAX_STALE_HOURS || 12), 1, 72),
   stockNormalOffsetHour: clamp(Number(process.env.STOCK_NORMAL_OFFSET_HOUR || 1), 0, 23),
-  stockMirageOffsetHour: clamp(Number(process.env.STOCK_MIRAGE_OFFSET_HOUR || 3), 0, 23),
+  stockMirageOffsetHour: clamp(Number(process.env.STOCK_MIRAGE_OFFSET_HOUR || 1), 0, 23),
   applicationCooldownMinutes: clamp(Number(process.env.APPLICATION_COOLDOWN_MINUTES || 10), 0, 1440),
   dataFile: process.env.DATA_FILE || path.join(__dirname, "bot-data.json"),
   timezone: process.env.TIMEZONE || process.env.TZ || "America/Sao_Paulo",
@@ -4242,9 +4242,15 @@ function stockKindHash(stock, kind) {
 }
 
 function updateLastStockHashes(stock, kinds = ["normal", "mirage"]) {
-  for (const kind of kinds) {
+  for (const kind of normalizeStockKinds(kinds)) {
     lastStockHashes[kind] = stockKindHash(stock, kind);
   }
+}
+
+function normalizeStockKinds(kinds = "") {
+  if (Array.isArray(kinds)) return kinds.filter((kind) => ["normal", "mirage"].includes(kind));
+  if (["normal", "mirage"].includes(kinds)) return [kinds];
+  return ["normal", "mirage"];
 }
 
 function stockSoftExpireAt() {
@@ -4256,7 +4262,7 @@ function ensureStockSchedulerStarted(immediate = true) {
   if (stockSchedulerStarted || !hasStockTargets()) return;
   stockSchedulerStarted = true;
   if (immediate) postStockIfChanged(true).catch((error) => console.error("[STOCK]", error.message));
-  setInterval(() => postStockIfChanged(false, currentStockRotationKind()), config.stockIntervalMinutes * 60 * 1000);
+  setInterval(() => postStockIfChanged(false, currentStockRotationKinds()), config.stockIntervalMinutes * 60 * 1000);
   scheduleNextStockRotationPost();
 }
 
@@ -4265,19 +4271,22 @@ function scheduleNextStockRotationPost() {
   const next = nextStockRotationInfo();
   const delay = Math.max(1000, next.date.getTime() - Date.now() + 8000);
   stockRotationTimer = setTimeout(async () => {
-    await pollStockAfterRotation(next.kind);
+    await pollStockAfterRotation(next.kinds);
     scheduleNextStockRotationPost();
   }, delay);
   console.log(`[STOCK] Proxima checagem de rotacao ${next.kind} agendada para ${next.date.toISOString()}`);
 }
 
-async function pollStockAfterRotation(kind, attempt = 0, previousHash = lastStockHashes[kind] || "") {
-  await postStockIfChanged(attempt === 0, kind);
-  const changed = lastStockHashes[kind] && lastStockHashes[kind] !== previousHash;
+async function pollStockAfterRotation(kinds, attempt = 0, previousHashes = null) {
+  const list = normalizeStockKinds(kinds);
+  const before = previousHashes || Object.fromEntries(list.map((kind) => [kind, lastStockHashes[kind] || ""]));
+
+  await postStockIfChanged(attempt === 0, list);
+  const changed = list.some((kind) => lastStockHashes[kind] && lastStockHashes[kind] !== before[kind]);
   if (changed || attempt >= 12) return;
 
   setTimeout(() => {
-    pollStockAfterRotation(kind, attempt + 1, previousHash).catch((error) => {
+    pollStockAfterRotation(list, attempt + 1, before).catch((error) => {
       console.error("[STOCK]", error.message);
     });
   }, 30 * 1000);
@@ -4290,13 +4299,15 @@ function nextStockRotationDate() {
 function nextStockRotationInfo() {
   const normal = nextStockKindDate("normal");
   const mirage = nextStockKindDate("mirage");
-  return normal.getTime() <= mirage.getTime()
-    ? { kind: "normal", date: normal }
-    : { kind: "mirage", date: mirage };
+  const date = new Date(Math.min(normal.getTime(), mirage.getTime()));
+  const kinds = [];
+  if (normal.getTime() === date.getTime()) kinds.push("normal");
+  if (mirage.getTime() === date.getTime()) kinds.push("mirage");
+  return { kind: kinds.join("+"), kinds, date };
 }
 
-function currentStockRotationKind() {
-  return nextStockRotationInfo().kind === "normal" ? "mirage" : "normal";
+function currentStockRotationKinds() {
+  return nextStockRotationInfo().kinds.includes("normal") ? ["mirage"] : ["normal", "mirage"];
 }
 
 function hasStockTargets() {
@@ -4313,14 +4324,14 @@ function stockTargetChannelIds() {
   return [...ids];
 }
 
-async function postStockIfChanged(firstRun, kind = "") {
+async function postStockIfChanged(firstRun, kinds = "") {
   try {
     const channelIds = stockTargetChannelIds();
     if (!channelIds.length) return;
 
     const stock = await fetchStock({ force: true });
-    const kinds = kind ? [kind] : ["normal", "mirage"];
-    const changedKinds = kinds.filter((item) => firstRun || stockKindHash(stock, item) !== lastStockHashes[item]);
+    const checkKinds = normalizeStockKinds(kinds);
+    const changedKinds = checkKinds.filter((item) => firstRun || stockKindHash(stock, item) !== lastStockHashes[item]);
     if (!changedKinds.length) return;
 
     updateLastStockHashes(stock, changedKinds);
