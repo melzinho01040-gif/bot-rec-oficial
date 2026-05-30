@@ -834,13 +834,14 @@ async function handleCommand(interaction) {
     const targetChannel = interaction.options.getChannel("canal_stock", false) || interaction.channel;
     if (!(await ensureStockTarget(interaction, targetChannel))) return;
     const stock = await fetchStock({ force: true });
-    await targetChannel.send(await stockMessagePayload(stock, interaction.guild));
     const store = guildData(interaction.guildId);
     store.stockChannelId = targetChannel.id;
+    const message = await upsertStockMessage(targetChannel, store, stock);
+    store.stockMessageId = message.id;
     scheduleDataSave();
     lastStockHash = stockHash(stock);
     ensureStockSchedulerStarted(false);
-    await safeEditReply(interaction, `Stock enviado em ${targetChannel} e atualizacao automatica ativada.`);
+    await safeEditReply(interaction, `Stock configurado em ${targetChannel}. A partir de agora eu vou editar a mesma mensagem: ${message.url}`);
     return;
   }
 
@@ -3000,6 +3001,7 @@ function guildData(guildId) {
   store.preregisters ||= {};
   store.inviteMembers ||= {};
   store.stockChannelId ||= "";
+  store.stockMessageId ||= "";
   return store;
 }
 
@@ -3633,13 +3635,33 @@ async function postStockIfChanged(firstRun) {
     for (const channelId of channelIds) {
       const channel = await client.channels.fetch(channelId).catch(() => null);
       if (!channel?.isTextBased?.()) continue;
-      await channel.send(await stockMessagePayload(stock, channel.guild)).catch((error) => {
-        console.error(`[STOCK] Nao consegui postar em ${channelId}: ${error.message}`);
+      const store = guildData(channel.guild.id);
+      if (!store.stockChannelId) store.stockChannelId = channel.id;
+      await upsertStockMessage(channel, store, stock).catch((error) => {
+        console.error(`[STOCK] Nao consegui atualizar em ${channelId}: ${error.message}`);
       });
     }
+    scheduleDataSave();
   } catch (error) {
     console.error("[STOCK]", error.message);
   }
+}
+
+async function upsertStockMessage(channel, store, stock) {
+  const payload = await stockMessagePayload(stock, channel.guild);
+  const messageId = normalizeSnowflake(store.stockMessageId);
+
+  if (messageId) {
+    const message = await channel.messages.fetch(messageId).catch(() => null);
+    if (message) {
+      await message.edit({ ...payload, attachments: [] });
+      return message;
+    }
+  }
+
+  const message = await channel.send(payload);
+  store.stockMessageId = message.id;
+  return message;
 }
 
 function normalizeStock(data) {
