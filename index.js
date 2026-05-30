@@ -581,6 +581,33 @@ const commands = [
     .setName("stock")
     .setDescription("Mostra o stock atual de Blox Fruits."),
   new SlashCommandBuilder()
+    .setName("combo")
+    .setDescription("Monta um combo de Blox Fruits pela sua fruta, estilo, espada e arma.")
+    .addStringOption((option) =>
+      option.setName("fruta").setDescription("Sua fruta, ex.: Dough, Portal, Kitsune").setRequired(true),
+    )
+    .addStringOption((option) =>
+      option.setName("estilo").setDescription("Estilo de luta, ex.: Godhuman, Sanguine Art").setRequired(true),
+    )
+    .addStringOption((option) =>
+      option.setName("espada").setDescription("Sua espada, ex.: Cursed Dual Katana").setRequired(true),
+    )
+    .addStringOption((option) =>
+      option.setName("arma").setDescription("Sua arma/gun, ex.: Soul Guitar").setRequired(true),
+    )
+    .addStringOption((option) =>
+      option
+        .setName("objetivo")
+        .setDescription("Tipo de combo")
+        .setRequired(false)
+        .addChoices(
+          { name: "PVP", value: "pvp" },
+          { name: "Bounty Hunt", value: "bounty" },
+          { name: "One Shot", value: "oneshot" },
+          { name: "Controle", value: "control" },
+        ),
+    ),
+  new SlashCommandBuilder()
     .setName("api-status")
     .setDescription("Testa APIs de stock e Roblox.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
@@ -1053,6 +1080,11 @@ async function handleCommand(interaction) {
     if (!(await safeDeferReply(interaction))) return;
     const stock = await fetchStock({ force: true });
     await safeEditReply(interaction, await stockMessagePayload(stock, interaction.guild));
+    return;
+  }
+
+  if (command === "combo") {
+    await handleComboCommand(interaction);
     return;
   }
 
@@ -1911,6 +1943,145 @@ async function showFruitValue(interaction) {
   await interaction.reply({ embeds: [embed] });
 }
 
+async function handleComboCommand(interaction) {
+  const build = {
+    fruit: cleanFruitName(interaction.options.getString("fruta", true)),
+    style: interaction.options.getString("estilo", true).trim(),
+    sword: interaction.options.getString("espada", true).trim(),
+    gun: interaction.options.getString("arma", true).trim(),
+    goal: interaction.options.getString("objetivo") || "pvp",
+  };
+  const combo = buildComboPlan(build);
+
+  const embed = baseEmbed(interaction.guild)
+    .setTitle(`${emo(interaction.guild, "spark")} Combo ${combo.title}`)
+    .setDescription(combo.sequence.map((step, index) => `**${index + 1}.** ${step}`).join("\n"))
+    .addFields(
+      { name: "Build", value: `Fruta: **${build.fruit}**\nEstilo: **${build.style}**\nEspada: **${build.sword}**\nArma: **${build.gun}**`, inline: true },
+      { name: "Objetivo", value: combo.goalLabel, inline: true },
+      { name: "Dificuldade", value: combo.difficulty, inline: true },
+      { name: "Ajustes", value: combo.tips.join("\n"), inline: false },
+    )
+    .setFooter({ text: `${config.brandName} | Combo gerado automaticamente` });
+
+  const fruitMeta = findFruitMeta(build.fruit);
+  if (fruitMeta?.meta?.imageUrl) embed.setThumbnail(fruitMeta.meta.imageUrl);
+  await interaction.reply({ embeds: [embed] });
+}
+
+function buildComboPlan(build) {
+  const fruitKey = normalizeFruitName(build.fruit);
+  const styleKey = normalizeKey(build.style).replace(/[^a-z0-9]/g, "");
+  const swordKey = normalizeKey(build.sword).replace(/[^a-z0-9]/g, "");
+  const gunKey = normalizeKey(build.gun).replace(/[^a-z0-9]/g, "");
+  const fruit = comboFruitProfile(fruitKey);
+  const style = comboStyleProfile(styleKey, build.style);
+  const sword = comboWeaponProfile(swordKey, build.sword, "espada");
+  const gun = comboWeaponProfile(gunKey, build.gun, "arma");
+  const goal = comboGoalProfile(build.goal);
+
+  const sequence = [
+    `${gun.open} para iniciar stun ou quebrar Ken.`,
+    `${fruit.start} para prender o alvo e confirmar alcance.`,
+    `${style.bridge} para puxar dano corpo a corpo sem dar respiro.`,
+    `${sword.burst} como burst principal enquanto o alvo ainda esta preso.`,
+    `${fruit.finish} para finalizar ou forcar evasiva.`,
+    `${style.reset} se o inimigo escapar; reposicione e repita pela arma.`,
+  ];
+
+  if (goal.id === "oneshot") {
+    sequence.splice(4, 0, `${gun.finish} antes da finalizacao se o alvo estiver sem Ken.`);
+  }
+
+  return {
+    title: `${build.fruit} + ${build.style}`,
+    goalLabel: goal.label,
+    difficulty: comboDifficulty(fruit, style, sword, gun, goal),
+    sequence,
+    tips: [
+      goal.tip,
+      fruit.tip,
+      `${style.name}: ${style.tip}`,
+      `${sword.name}: use depois do stun, nao como abertura seca.`,
+      `${gun.name}: guarde um movimento para cancelar fuga ou segurar distancia.`,
+    ],
+  };
+}
+
+function comboGoalProfile(goal) {
+  const profiles = {
+    bounty: { id: "bounty", label: "Bounty Hunt", tip: "Priorize iniciar de surpresa e sair rapido depois do kill." },
+    oneshot: { id: "oneshot", label: "One Shot", tip: "Use tudo depois de confirmar stun; se errar o inicio, reseta." },
+    control: { id: "control", label: "Controle", tip: "Segure cooldowns e jogue mais pelo stun do que por dano bruto." },
+    pvp: { id: "pvp", label: "PVP", tip: "Nao gaste todos os cooldowns se o alvo ainda tiver mobilidade." },
+  };
+  return profiles[goal] || profiles.pvp;
+}
+
+function comboFruitProfile(key) {
+  const profiles = [
+    [["dough"], "Dough", "Dough X/Z", "Dough C/V", "Fruta forte para prender; tente confirmar antes de gastar V."],
+    [["portal"], "Portal", "Portal Z/C", "Portal V ou espada", "Portal e otima para reposicionar; dano vem mais da espada/estilo."],
+    [["kitsune"], "Kitsune", "Kitsune X/Z", "Kitsune C/V", "Use mobilidade para baitar Ken antes do combo real."],
+    [["dragon"], "Dragon", "Dragon X/Z", "Dragon C/V", "Combos sao mais pesados; confirme stun antes de transformar agressivo."],
+    [["leopard"], "Leopard", "Leopard Z/X", "Leopard C/F", "Pressione com mobilidade, mas cuidado para nao ficar previsivel."],
+    [["rumble"], "Rumble", "Rumble X/Z", "Rumble V", "Rumble joga muito por stun; perfeito para confirmar espada."],
+    [["ice"], "Ice", "Ice V/Z", "Ice C + espada", "Freeze e a janela principal; se errar, recue."],
+    [["dark"], "Dark", "Dark X/C", "Dark V + espada", "Dark depende de acertar controle; jogue paciente."],
+    [["shadow"], "Shadow", "Shadow Z/X", "Shadow V/C", "Boa pressao de medio alcance; finalize quando o alvo gastar escape."],
+    [["venom"], "Venom", "Venom X/Z", "Venom C/F", "Dano constante ajuda, mas nao troque parado contra burst."],
+    [["spirit"], "Spirit", "Spirit Z/C", "Spirit V", "Use invocacoes para forcar movimento antes do stun."],
+    [["light"], "Light", "Light X/Z", "Light V/C", "Boa velocidade; entre e saia antes de tomar contra-combo."],
+  ];
+  const found = profiles.find(([keys]) => keys.some((item) => key.includes(item)));
+  if (found) return { name: found[1], start: found[2], finish: found[3], tip: found[4] };
+  return { name: "Fruta", start: `${foundMoveName(key, "Fruta")} Z/X`, finish: `${foundMoveName(key, "Fruta")} C/V`, tip: "Adapte a ordem usando primeiro o movimento que mais prende o alvo." };
+}
+
+function comboStyleProfile(key, fallback) {
+  const profiles = [
+    [["godhuman"], "Godhuman", "Godhuman C + Z", "Godhuman X para resetar distancia", "Muito bom para conectar depois de stun curto."],
+    [["sanguineart", "sanguine"], "Sanguine Art", "Sanguine C + Z", "Sanguine X para chase", "Excelente para sustain e pressao curta."],
+    [["electricclaw", "eclaw"], "Electric Claw", "Electric Claw C + Z", "Electric Claw X para reposicionar", "Rapido e bom para bounty hunt."],
+    [["sharkmankarate", "sharkman"], "Sharkman Karate", "Sharkman X + C", "Sharkman Z para manter perto", "Consistente e facil de encaixar."],
+    [["dragontalon"], "Dragon Talon", "Dragon Talon X + C", "Dragon Talon Z para pressao", "Dano alto, exige confirmar bem."],
+    [["deathstep"], "Death Step", "Death Step C + Z", "Death Step X para chase", "Bom quando o alvo ja esta preso."],
+    [["superhuman"], "Superhuman", "Superhuman Z + C", "Superhuman X para finalizar", "Classico e direto para combos curtos."],
+  ];
+  const found = profiles.find(([keys]) => keys.some((item) => key.includes(item)));
+  if (found) return { name: found[1], bridge: found[2], reset: found[3], tip: found[4] };
+  return { name: fallback, bridge: `${fallback} Z/C`, reset: `${fallback} X para resetar`, tip: "Use o golpe mais rapido logo depois do stun." };
+}
+
+function comboWeaponProfile(key, fallback, type) {
+  const profiles = [
+    [["soulguitar"], "Soul Guitar", "Soul Guitar X", "Soul Guitar Z", "stun forte"],
+    [["kabucha"], "Kabucha", "Kabucha X", "Kabucha Z", "knockback e Ken break"],
+    [["serpentsbow"], "Serpent Bow", "Serpent Bow Z", "Serpent Bow X", "controle de distancia"],
+    [["curseddualkatana", "cdk"], "Cursed Dual Katana", "CDK Z", "CDK X", "burst pesado"],
+    [["sharkanchor"], "Shark Anchor", "Shark Anchor X", "Shark Anchor Z", "puxao e dano"],
+    [["spikeytrident"], "Spikey Trident", "Spikey Trident X", "Spikey Trident Z", "puxao para confirmar"],
+    [["dragontrident"], "Dragon Trident", "Dragon Trident X", "Dragon Trident Z", "controle em area"],
+    [["tushita"], "Tushita", "Tushita X", "Tushita Z", "mobilidade e dano"],
+    [["yoru", "darkblade"], "Dark Blade", "Dark Blade X", "Dark Blade Z", "dano direto"],
+  ];
+  const found = profiles.find(([keys]) => keys.some((item) => key.includes(item)));
+  if (found) return { name: found[1], open: found[2], burst: found[2], finish: found[3], tip: found[4] };
+  const label = fallback || type;
+  return { name: label, open: `${label} Z`, burst: `${label} X/Z`, finish: `${label} X`, tip: `use como ${type === "arma" ? "stun/abertura" : "burst"}` };
+}
+
+function comboDifficulty(...parts) {
+  const text = parts.map((item) => `${item.name || ""} ${item.label || ""}`).join(" ").toLowerCase();
+  if (/portal|dragon|control|oneshot/.test(text)) return "Alta";
+  if (/dough|rumble|godhuman|sanguine|cursed|spikey/.test(text)) return "Media";
+  return "Baixa/Media";
+}
+
+function foundMoveName(key, fallback) {
+  return key ? cleanFruitName(key) : fallback;
+}
+
 async function createGuildAccess(interaction) {
   await interaction.deferReply({ flags: EPHEMERAL });
   const channel = interaction.channel;
@@ -2047,7 +2218,7 @@ async function handleButton(interaction) {
   }
 
   if (id.startsWith("tc:")) {
-    await openTicketThread(interaction);
+    await startTicketModal(interaction);
     return;
   }
 
@@ -2132,6 +2303,11 @@ async function handleModal(interaction) {
         ["Por que quer entrar?", "recruit_reason"],
       ],
     });
+    return;
+  }
+
+  if (interaction.customId.startsWith("tm:")) {
+    await submitTicketModal(interaction);
   }
 }
 
@@ -2551,20 +2727,30 @@ function ticketCenterEmbed(guild, setup) {
   return baseEmbed(guild)
     .setTitle(`${emo(guild, "ticket")} Central de Tickets`)
     .setDescription([
-      "Escolha o atendimento certo abaixo.",
-      "O bot abre um topico privado no canal configurado e chama a equipe.",
-      "Explique o problema com calma quando o topico abrir.",
+      "Escolha o atendimento certo abaixo e preencha o formulario.",
+      "O bot abre um topico privado, chama a equipe, registra logs e gera transcript no fechamento.",
+      "Tickets podem ser assumidos, isolados, receber convidados e ser fechados com historico.",
     ].join("\n"))
     .addFields(
       {
         name: `${emo(guild, "leave")} Quero sair da crew`,
         value: `Abre em ${setup.leaveChannel}.`,
-        inline: false,
+        inline: true,
       },
       {
         name: `${emo(guild, "support")} Suporte tecnico`,
         value: `Abre em ${setup.supportChannel}.`,
-        inline: false,
+        inline: true,
+      },
+      {
+        name: `${emo(guild, "warn")} Denuncia`,
+        value: `Abre em ${setup.supportChannel}.`,
+        inline: true,
+      },
+      {
+        name: `${emo(guild, "spark")} Parceria/Outros`,
+        value: `Abre em ${setup.supportChannel}.`,
+        inline: true,
       },
       {
         name: `${emo(guild, "staff")} Equipe`,
@@ -2582,7 +2768,45 @@ function ticketCenterButtons(guild, setup) {
   return new ActionRowBuilder().addComponents(
     button(`tc:crew:${setup.leaveChannel.id}:${setup.supportRole.id}:${adminRoleId}:${logChannelId}`, "Sair da crew", ButtonStyle.Danger, "leave", guild),
     button(`tc:tech:${setup.supportChannel.id}:${setup.supportRole.id}:${adminRoleId}:${logChannelId}`, "Suporte tecnico", ButtonStyle.Primary, "support", guild),
+    button(`tc:report:${setup.supportChannel.id}:${setup.supportRole.id}:${adminRoleId}:${logChannelId}`, "Denuncia", ButtonStyle.Secondary, "warn", guild),
+    button(`tc:partner:${setup.supportChannel.id}:${setup.supportRole.id}:${adminRoleId}:${logChannelId}`, "Parceria", ButtonStyle.Success, "spark", guild),
   );
+}
+
+async function startTicketModal(interaction) {
+  const parsed = parseTicketOpenId(interaction.customId);
+  if (!parsed) {
+    await interaction.reply(hidden({ content: "Esse painel de ticket esta invalido. Peça para um admin criar outro." }));
+    return;
+  }
+  await interaction.showModal(ticketOpenModal(parsed));
+}
+
+function ticketOpenModal(ticket) {
+  return new ModalBuilder()
+    .setCustomId(`tm:${ticket.type}:${ticket.parentChannelId}:${ticket.supportRoleId}:${ticket.adminRoleId}:${ticket.logChannelId}`)
+    .setTitle(ticketTypeLabel(ticket.type).slice(0, 45))
+    .addComponents(
+      textInput("ticket_subject", "Assunto do ticket", "Ex.: preciso falar com suporte sobre...", TextInputStyle.Short),
+      textInput("ticket_details", "Explique com detalhes", "Conte o que aconteceu, mande contexto e o que voce precisa.", TextInputStyle.Paragraph),
+      textInput("ticket_roblox", "Nome no Roblox", "Ex.: SeuNickRoblox ou N/A", TextInputStyle.Short),
+      textInput("ticket_platform", "Plataforma", "PC, mobile, console ou N/A", TextInputStyle.Short),
+    );
+}
+
+async function submitTicketModal(interaction) {
+  if (!(await safeDeferReply(interaction, { flags: EPHEMERAL }))) return;
+  const parsed = parseTicketModalId(interaction.customId);
+  if (!parsed) {
+    await interaction.editReply("Esse formulario de ticket esta invalido. Crie outro pela central.");
+    return;
+  }
+  await createAdvancedTicketThread(interaction, parsed, {
+    subject: interaction.fields.getTextInputValue("ticket_subject"),
+    details: interaction.fields.getTextInputValue("ticket_details"),
+    roblox: interaction.fields.getTextInputValue("ticket_roblox"),
+    platform: interaction.fields.getTextInputValue("ticket_platform"),
+  });
 }
 
 async function openTicketThread(interaction) {
@@ -2634,20 +2858,83 @@ async function openTicketThread(interaction) {
   await interaction.editReply(`Ticket criado: ${thread}. Explique seu problema la dentro.`);
 }
 
-function ticketInitialEmbed(guild, user, ticket) {
+async function createAdvancedTicketThread(interaction, parsed, form) {
+  const parent = await resolveChannel(interaction.guild, parsed.parentChannelId);
+  if (!parent || parent.type !== ChannelType.GuildText) {
+    await interaction.editReply("Nao achei o canal configurado para esse tipo de ticket.");
+    return;
+  }
+
+  const botMember = await interaction.guild.members.fetchMe();
+  const permissions = parent.permissionsFor(botMember);
+  const needed = [
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.SendMessagesInThreads,
+    PermissionFlagsBits.CreatePrivateThreads,
+  ];
+
+  if (!permissions || !permissions.has(needed)) {
+    await interaction.editReply("Faltam permissoes no canal configurado: View Channel, Send Messages, Send Messages in Threads e Create Private Threads.");
+    return;
+  }
+
+  const safeUser = normalizeChannelName(interaction.user.username);
+  const safeSubject = normalizeChannelName(form.subject).slice(0, 28) || ticketTypeLabel(parsed.type);
+  const thread = await parent.threads.create({
+    name: `${ticketTypeShort(parsed.type)}-${safeUser}-${safeSubject}`.slice(0, 95),
+    type: ChannelType.PrivateThread,
+    autoArchiveDuration: 1440,
+    invitable: false,
+    reason: `Ticket ${ticketTypeLabel(parsed.type)} aberto por ${interaction.user.tag}`,
+  });
+
+  await addTicketMembers(thread, interaction, parsed);
+
+  await thread.send({
+    content: `${interaction.user} <@&${parsed.supportRoleId}>`,
+    embeds: [ticketInitialEmbed(interaction.guild, interaction.user, parsed, form)],
+    components: ticketComponents(interaction.guild, interaction.user.id, parsed),
+    allowedMentions: { users: [interaction.user.id], roles: parsed.supportRoleId !== "0" ? [parsed.supportRoleId] : [] },
+  });
+
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: ticket aberto",
+    color: ticketTypeColor(parsed.type),
+    fields: [
+      ["Usuario", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Tipo", ticketTypeLabel(parsed.type), true],
+      ["Topico", `${thread}`, true],
+      ["Assunto", form.subject],
+    ],
+  });
+
+  await interaction.editReply(`Ticket criado: ${thread}. A equipe ja recebeu seu formulario.`);
+}
+
+function ticketInitialEmbed(guild, user, ticket, form = null) {
   const isCrew = ticket.type === "crew";
-  return baseEmbed(guild)
+  const embed = baseEmbed(guild)
     .setTitle(`${isCrew ? emo(guild, "leave") : emo(guild, "support")} ${ticketTypeLabel(ticket.type)}`)
     .setDescription([
-      `${user}, explique seu caso com detalhes.`,
+      `${user}, seu atendimento foi aberto com prioridade organizada.`,
       "",
       isCrew
         ? "Diga por que quer sair da crew e se precisa falar com algum responsavel."
-        : "Diga o erro, onde aconteceu, mande prints e informe seu dispositivo.",
+        : ticketTypeGuide(ticket.type),
       "",
       "Um suporte pode assumir o atendimento pelo botao abaixo.",
     ].join("\n"))
     .setTimestamp();
+  if (form) {
+    embed.addFields(
+      { name: "Assunto", value: safeField(form.subject), inline: false },
+      { name: "Detalhes", value: safeField(form.details), inline: false },
+      { name: "Roblox", value: safeField(form.roblox), inline: true },
+      { name: "Plataforma", value: safeField(form.platform), inline: true },
+    );
+  }
+  return embed;
 }
 
 function ticketComponents(guild, openerId, ticket, assumerId = "0") {
@@ -2852,7 +3139,13 @@ async function buildTranscript(thread) {
 
 function parseTicketOpenId(customId) {
   const [, type, parentChannelId, supportRoleId, adminRoleId, logChannelId] = String(customId).split(":");
-  if (!["crew", "tech"].includes(type) || !/^\d{10,25}$/.test(parentChannelId)) return null;
+  if (!["crew", "tech", "report", "partner"].includes(type) || !/^\d{10,25}$/.test(parentChannelId)) return null;
+  return { type, parentChannelId, supportRoleId, adminRoleId, logChannelId };
+}
+
+function parseTicketModalId(customId) {
+  const [, type, parentChannelId, supportRoleId, adminRoleId, logChannelId] = String(customId).split(":");
+  if (!["crew", "tech", "report", "partner"].includes(type) || !/^\d{10,25}$/.test(parentChannelId)) return null;
   return { type, parentChannelId, supportRoleId, adminRoleId, logChannelId };
 }
 
@@ -2884,7 +3177,30 @@ function hasTicketStaff(member, supportRoleId, adminRoleId) {
 }
 
 function ticketTypeLabel(type) {
-  return type === "crew" ? "Quero sair da crew" : "Suporte tecnico";
+  if (type === "crew") return "Quero sair da crew";
+  if (type === "report") return "Denuncia";
+  if (type === "partner") return "Parceria";
+  return "Suporte tecnico";
+}
+
+function ticketTypeShort(type) {
+  if (type === "crew") return "crew";
+  if (type === "report") return "denuncia";
+  if (type === "partner") return "parceria";
+  return "suporte";
+}
+
+function ticketTypeGuide(type) {
+  if (type === "report") return "Informe quem esta envolvido, provas, horarios e links/prints se tiver.";
+  if (type === "partner") return "Explique a proposta, servidor/perfil envolvido e o que a parceria oferece.";
+  return "Diga o erro, onde aconteceu, mande prints e informe seu dispositivo.";
+}
+
+function ticketTypeColor(type) {
+  if (type === "crew") return 0xff3b5c;
+  if (type === "report") return 0xffc857;
+  if (type === "partner") return 0x00ff85;
+  return 0x7b2cff;
 }
 
 function normalizeChannelName(value) {
