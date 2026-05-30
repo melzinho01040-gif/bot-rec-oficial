@@ -2561,12 +2561,12 @@ function stockItemsForKind(stock, kind, lines) {
 
 async function renderStockImage(title, items, nextClock = "") {
   const width = 1600;
-  const height = items.length > 4 ? 900 : 720;
+  const height = items.length > 4 ? 1040 : 760;
   const cardWidth = 260;
   const cardHeight = 350;
   const gap = 40;
   const startX = 270;
-  const startY = 125;
+  const startY = 145;
   const brand = config.stockBrandName || "Divine Hunters";
   const rows = Math.ceil(items.length / 4);
   const bgSvg = stockBackgroundSvg(width, height);
@@ -2574,9 +2574,9 @@ async function renderStockImage(title, items, nextClock = "") {
     const col = index % 4;
     const row = Math.floor(index / 4);
     const x = startX + col * (cardWidth + gap);
-    const y = startY + row * (cardHeight + 55);
+    const y = startY + row * (cardHeight + 70);
     const name = pixelTextSvg(item.name, x + cardWidth / 2, y + 258, 5, "#f7f3ff", "middle");
-    const price = pixelTextSvg(item.price || "?", x + cardWidth / 2, y + 305, 5, "#17ffc3", "middle");
+    const price = pixelTextSvg(item.price || "?", x + cardWidth / 2, y + 308, 4, "#17ffc3", "middle");
     return `
       <g>
         <rect x="${x - 8}" y="${y - 8}" width="${cardWidth + 16}" height="${cardHeight + 16}" rx="24" fill="#4b1591" opacity="0.35" filter="url(#glow)"/>
@@ -2610,11 +2610,11 @@ async function renderStockImage(title, items, nextClock = "") {
       <circle cx="112" cy="104" r="68" fill="#14032b" stroke="#7f38e8" stroke-width="5" filter="url(#glow)"/>
       ${pixelTextSvg("DH", 112, 70, 7, "#f5ecff", "middle")}
       ${pixelTextSvg("LIVE STOCK", 112, 122, 3, "#17ffc3", "middle")}
-      ${pixelTextSvg(brand, 112, 188, 4, "#f2ebff", "middle")}
-      ${pixelTextSvg(title, 260, 38, 7, "#ffffff", "start")}
+      ${pixelTextSvg(brand, 112, 188, 2, "#f2ebff", "middle")}
+      ${pixelTextSvg(title, 260, 38, 6, "#ffffff", "start")}
       ${cardSvg}
-      ${pixelTextSvg(`Proxima atualizacao: ${nextClock}`, 260, height - 82, 4, "#17ffc3", "start")}
-      ${pixelTextSvg("Atualizado automaticamente pelo bot", 260, height - 42, 3, "#a9b6ff", "start")}
+      ${pixelTextSvg(`Proxima atualizacao: ${nextClock}`, 270, height - 86, 3, "#17ffc3", "start")}
+      ${pixelTextSvg("Atualizado automaticamente pelo bot", 270, height - 50, 3, "#a9b6ff", "start")}
     </svg>`);
 
   const composites = [];
@@ -2637,7 +2637,7 @@ async function renderStockImage(title, items, nextClock = "") {
     const col = index % 4;
     const row = Math.floor(index / 4);
     const x = startX + col * (cardWidth + gap);
-    const y = startY + row * (cardHeight + 55);
+    const y = startY + row * (cardHeight + 70);
     composites.push({
       input: await sharp(image).resize(190, 170, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer(),
       left: x + 35,
