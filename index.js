@@ -65,8 +65,8 @@ const config = {
   stockIntervalMinutes: clamp(Number(process.env.STOCK_INTERVAL_MINUTES || 5), 1, 240),
   stockCacheMinutes: clamp(Number(process.env.STOCK_CACHE_MINUTES || 2), 0, 15),
   stockCacheMaxStaleHours: clamp(Number(process.env.STOCK_CACHE_MAX_STALE_HOURS || 12), 1, 72),
-  stockNormalOffsetHour: clamp(Number(process.env.STOCK_NORMAL_OFFSET_HOUR || 2), 0, 23),
-  stockMirageOffsetHour: clamp(Number(process.env.STOCK_MIRAGE_OFFSET_HOUR || 0), 0, 23),
+  stockNormalOffsetHour: clamp(Number(process.env.STOCK_NORMAL_OFFSET_HOUR || 1), 0, 23),
+  stockMirageOffsetHour: clamp(Number(process.env.STOCK_MIRAGE_OFFSET_HOUR || 3), 0, 23),
   applicationCooldownMinutes: clamp(Number(process.env.APPLICATION_COOLDOWN_MINUTES || 10), 0, 1440),
   dataFile: process.env.DATA_FILE || path.join(__dirname, "bot-data.json"),
   timezone: process.env.TIMEZONE || process.env.TZ || "America/Sao_Paulo",
@@ -2726,8 +2726,8 @@ function servicesEmbed(guild, bannerUrl = "") {
 }
 
 function stockEmbed(stock, guild) {
-  const nextNormal = nextRotationText(4);
-  const nextMirage = nextRotationText(2);
+  const nextNormal = nextStockRotationText("normal");
+  const nextMirage = nextStockRotationText("mirage");
   const status = stock.stale
     ? "Fallback ativo com ultimo stock salvo em memoria."
     : stock.cached
@@ -2759,8 +2759,8 @@ function stockEmbed(stock, guild) {
   }
   if (stock.expiresAt) {
     embed.addFields(
-      { name: `${emo(guild, "normal")} Proxima Normal`, value: `${nextRotationClock(4)} - ${nextRotationText(4)}`, inline: true },
-      { name: `${emo(guild, "mirage")} Proxima Mirage`, value: `${nextRotationClock(2)} - ${nextRotationText(2)}`, inline: true },
+      { name: `${emo(guild, "normal")} Proxima Normal`, value: `${nextStockRotationClock("normal")} - ${nextStockRotationText("normal")}`, inline: true },
+      { name: `${emo(guild, "mirage")} Proxima Mirage`, value: `${nextStockRotationClock("mirage")} - ${nextStockRotationText("mirage")}`, inline: true },
     );
   }
   if (config.stockShowSource && stock.source) {
@@ -2871,7 +2871,7 @@ function stockCleanFallbackEmbeds(stock, guild) {
       .setColor(config.color)
       .setDescription([
         `${emo(guild, "mirage") || "🌙"} **Mirage Stock Atualizado!**`,
-        `${emo(guild, "clock") || "🏆"} Próxima atualização: **${nextRotationClock(2)}**`,
+        `${emo(guild, "clock") || "🏆"} Próxima atualização: **${nextStockRotationClock("mirage")}**`,
         "",
         stock.mirage.join("\n").slice(0, 1000),
       ].join("\n")));
@@ -3033,13 +3033,13 @@ function stockUpdateContent(stock, guild) {
   }
   if (stock.mirage?.length) {
     lines.push(`${emo(guild, "mirage") || "🌌"} Mirage Stock Atualizado!`);
-    lines.push(`${emo(guild, "clock") || "⏳"} Proxima atualizacao: **${nextRotationClock(2)}**`);
+    lines.push(`${emo(guild, "clock") || "⏳"} Proxima atualizacao: **${nextStockRotationClock("mirage")}**`);
   }
   return lines.join("\n");
 }
 
 function stockSectionNextClock(key) {
-  return nextRotationClock(key === "mirage" ? 2 : 4);
+  return nextStockRotationClock(key === "mirage" ? "mirage" : "normal");
 }
 
 function stockBeliText(value) {
@@ -3924,7 +3924,7 @@ function stockHash(stock) {
 
 function stockSoftExpireAt() {
   if (config.stockCacheMinutes <= 0) return Date.now();
-  return Math.min(nextRotationDate(2).getTime() + 60 * 1000, Date.now() + config.stockCacheMinutes * 60 * 1000);
+  return Math.min(nextStockRotationDate().getTime() + 60 * 1000, Date.now() + config.stockCacheMinutes * 60 * 1000);
 }
 
 function ensureStockSchedulerStarted(immediate = true) {
@@ -3959,8 +3959,8 @@ async function pollStockAfterRotation(attempt = 0, previousHash = lastStockHash)
 }
 
 function nextStockRotationDate() {
-  const normal = nextRotationDate(4);
-  const mirage = nextRotationDate(2);
+  const normal = nextStockKindDate("normal");
+  const mirage = nextStockKindDate("mirage");
   return normal.getTime() <= mirage.getTime() ? normal : mirage;
 }
 
@@ -4393,8 +4393,21 @@ function nextRotationText(hours) {
   return `<t:${Math.floor(next.getTime() / 1000)}:R>`;
 }
 
+function nextStockRotationText(kind) {
+  const next = nextStockKindDate(kind);
+  return `<t:${Math.floor(next.getTime() / 1000)}:R>`;
+}
+
 function nextRotationClock(hours) {
   const next = nextRotationDate(hours);
+  return formatStockRotationClock(next);
+}
+
+function nextStockRotationClock(kind) {
+  return formatStockRotationClock(nextStockKindDate(kind));
+}
+
+function formatStockRotationClock(next) {
   try {
     return new Intl.DateTimeFormat("pt-BR", {
       hour: "2-digit",
@@ -4407,8 +4420,13 @@ function nextRotationClock(hours) {
   }
 }
 
-function nextRotationDate(hours) {
-  const offset = hours === 4 ? config.stockNormalOffsetHour : config.stockMirageOffsetHour;
+function nextStockKindDate(kind) {
+  const offset = kind === "mirage" ? config.stockMirageOffsetHour : config.stockNormalOffsetHour;
+  return nextRotationDate(4, offset);
+}
+
+function nextRotationDate(hours, offsetOverride = null) {
+  const offset = offsetOverride ?? (hours === 4 ? config.stockNormalOffsetHour : config.stockMirageOffsetHour);
   const now = new Date();
   const parts = timeZoneParts(now);
   const baseHour = Math.floor((parts.hour - offset) / hours) * hours + offset;

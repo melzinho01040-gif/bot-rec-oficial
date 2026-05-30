@@ -58,7 +58,12 @@ Cria uma embed personalizada:
 Envia o painel de stock no canal escolhido e ativa atualizacao automatica. O bot faz uma checagem rapida de seguranca e tambem agenda postagem nos horarios de rotacao:
 
 - Normal Stock: a cada 4 horas.
-- Mirage Stock: a cada 2 horas.
+- Mirage Stock: a cada 4 horas, alternando com o Normal.
+
+O ciclo padrao fica igual ao Blox Fruits:
+
+- Normal: 01:00, 05:00, 09:00, 13:00, 17:00, 21:00.
+- Mirage: 03:00, 07:00, 11:00, 15:00, 19:00, 23:00.
 
 Os offsets podem ser ajustados pelas variaveis `STOCK_NORMAL_OFFSET_HOUR` e `STOCK_MIRAGE_OFFSET_HOUR`.
 
