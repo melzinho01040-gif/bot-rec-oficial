@@ -332,6 +332,96 @@ const commands = [
         ),
     ),
   new SlashCommandBuilder()
+    .setName("regras")
+    .setDescription("Cria uma embed bonita com as regras da crew.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("setup")
+        .setDescription("Envia o painel de regras em um canal.")
+        .addChannelOption((option) =>
+          option.setName("canal").setDescription("Canal das regras").addChannelTypes(ChannelType.GuildText).setRequired(true),
+        )
+        .addStringOption((option) =>
+          option.setName("titulo").setDescription("Titulo do painel").setMaxLength(120).setRequired(false),
+        )
+        .addStringOption((option) =>
+          option.setName("texto").setDescription("Regras personalizadas").setMaxLength(3500).setRequired(false),
+        )
+        .addStringOption((option) =>
+          option.setName("imagem_url").setDescription("Banner/imagem opcional").setRequired(false),
+        ),
+    ),
+  new SlashCommandBuilder()
+    .setName("sugestao")
+    .setDescription("Sistema de sugestoes da crew.")
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("setup")
+        .setDescription("Define o canal onde as sugestoes serao enviadas.")
+        .addChannelOption((option) =>
+          option.setName("canal").setDescription("Canal de sugestoes").addChannelTypes(ChannelType.GuildText).setRequired(true),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("enviar")
+        .setDescription("Envia uma sugestao para votacao.")
+        .addStringOption((option) =>
+          option.setName("texto").setDescription("Sua sugestao").setMaxLength(1800).setRequired(true),
+        )
+        .addStringOption((option) =>
+          option.setName("imagem_url").setDescription("Imagem opcional").setRequired(false),
+        ),
+    ),
+  new SlashCommandBuilder()
+    .setName("anuncio")
+    .setDescription("Envia anuncios em embed no estilo da crew.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("enviar")
+        .setDescription("Publica um anuncio em um canal.")
+        .addChannelOption((option) =>
+          option.setName("canal").setDescription("Canal do anuncio").addChannelTypes(ChannelType.GuildText).setRequired(true),
+        )
+        .addStringOption((option) =>
+          option.setName("titulo").setDescription("Titulo do anuncio").setMaxLength(160).setRequired(true),
+        )
+        .addStringOption((option) =>
+          option.setName("texto").setDescription("Texto do anuncio").setMaxLength(3500).setRequired(true),
+        )
+        .addStringOption((option) =>
+          option.setName("imagem_url").setDescription("Banner/imagem opcional").setRequired(false),
+        )
+        .addRoleOption((option) =>
+          option.setName("cargo_ping").setDescription("Cargo para marcar junto do anuncio").setRequired(false),
+        ),
+    ),
+  new SlashCommandBuilder()
+    .setName("warn")
+    .setDescription("Sistema simples de avisos da equipe.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("add")
+        .setDescription("Aplica um aviso em um membro.")
+        .addUserOption((option) => option.setName("usuario").setDescription("Membro avisado").setRequired(true))
+        .addStringOption((option) => option.setName("motivo").setDescription("Motivo do aviso").setMaxLength(800).setRequired(true)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("listar")
+        .setDescription("Lista avisos de um membro.")
+        .addUserOption((option) => option.setName("usuario").setDescription("Membro consultado").setRequired(true)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("limpar")
+        .setDescription("Limpa os avisos de um membro.")
+        .addUserOption((option) => option.setName("usuario").setDescription("Membro limpo").setRequired(true)),
+    ),
+  new SlashCommandBuilder()
     .setName("setup-staff")
     .setDescription("Envia o painel de aplicacao para staff.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -874,6 +964,26 @@ async function handleCommand(interaction) {
     return;
   }
 
+  if (command === "regras") {
+    await handleRulesCommand(interaction);
+    return;
+  }
+
+  if (command === "sugestao") {
+    await handleSuggestionCommand(interaction);
+    return;
+  }
+
+  if (command === "anuncio") {
+    await handleAnnouncementCommand(interaction);
+    return;
+  }
+
+  if (command === "warn") {
+    await handleWarnCommand(interaction);
+    return;
+  }
+
   if (command === "setup-staff" || command === "embed-staff") {
     const targetChannelId = getApplicationTargetFromCommand(interaction);
     if (!(await ensureApplicationTarget(interaction, targetChannelId))) return;
@@ -1204,6 +1314,185 @@ async function handleAuditCommand(interaction) {
       .setFooter({ text: `${config.brandName} • Auditoria • ${formatDateTime()}` })],
   });
   await interaction.reply(hidden({ content: `Auditoria configurada em ${channel}.` }));
+}
+
+async function handleRulesCommand(interaction) {
+  const channel = interaction.options.getChannel("canal", true);
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+
+  const title = interaction.options.getString("titulo") || `Regras da ${config.brandName}`;
+  const text = interaction.options.getString("texto") || [
+    "1. Respeite todos os membros da crew.",
+    "2. Nao divulgue links, spam ou conteudo ofensivo.",
+    "3. Siga as orientacoes da staff em eventos, PVP e recrutamento.",
+    "4. Evite brigas, provocacoes pesadas e flood nos canais.",
+    "5. Qualquer tentativa de golpe, toxidade ou abuso pode gerar punicao.",
+  ].join("\n");
+  const imageUrl = interaction.options.getString("imagem_url") || config.bannerUrl;
+
+  const embed = baseEmbed(interaction.guild)
+    .setTitle(title)
+    .setDescription(text)
+    .setColor(0x7b2cff)
+    .setTimestamp();
+  if (imageUrl) embed.setImage(imageUrl);
+
+  await channel.send({ embeds: [embed] });
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: regras publicadas",
+    color: 0x7b2cff,
+    fields: [
+      ["Responsavel", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Canal", `${channel}`],
+    ],
+  });
+  await interaction.reply(hidden({ content: `Painel de regras enviado em ${channel}.` }));
+}
+
+async function handleSuggestionCommand(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const store = guildData(interaction.guildId);
+
+  if (subcommand === "setup") {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply(hidden({ content: "So administradores podem configurar o canal de sugestoes." }));
+      return;
+    }
+    const channel = interaction.options.getChannel("canal", true);
+    if (!(await ensurePanelTarget(interaction, channel))) return;
+    store.suggestionChannelId = channel.id;
+    scheduleDataSave();
+    await channel.send({
+      embeds: [baseEmbed(interaction.guild)
+        .setTitle("Central de Sugestoes")
+        .setDescription("As ideias enviadas pela crew aparecem aqui para a equipe avaliar e a comunidade votar.")
+        .setColor(0x00ff85)],
+    });
+    await interaction.reply(hidden({ content: `Canal de sugestoes configurado em ${channel}.` }));
+    return;
+  }
+
+  const channel = await resolveChannel(interaction.guild, store.suggestionChannelId) || interaction.channel;
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+  const text = interaction.options.getString("texto", true);
+  const imageUrl = interaction.options.getString("imagem_url") || "";
+  const embed = baseEmbed(interaction.guild)
+    .setTitle("Nova Sugestao")
+    .setDescription(text)
+    .setColor(0x00ff85)
+    .addFields({ name: "Autor", value: `${interaction.user} (\`${interaction.user.id}\`)` })
+    .setTimestamp();
+  if (imageUrl) embed.setImage(imageUrl);
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("suggestion_vote:up").setLabel("Aprovar").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("suggestion_vote:down").setLabel("Reprovar").setStyle(ButtonStyle.Danger),
+  );
+  await channel.send({ embeds: [embed], components: [row] });
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: sugestao enviada",
+    color: 0x00ff85,
+    fields: [
+      ["Autor", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Canal", `${channel}`],
+      ["Sugestao", text],
+    ],
+  });
+  await interaction.reply(hidden({ content: `Sugestao enviada em ${channel}.` }));
+}
+
+async function handleAnnouncementCommand(interaction) {
+  const channel = interaction.options.getChannel("canal", true);
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+
+  const title = interaction.options.getString("titulo", true);
+  const text = interaction.options.getString("texto", true);
+  const imageUrl = interaction.options.getString("imagem_url") || "";
+  const pingRole = interaction.options.getRole("cargo_ping", false);
+  const embed = eventStyleEmbed(interaction.guild, 0x7b2cff)
+    .setTitle(title)
+    .setDescription(text)
+    .setFooter({ text: `${config.brandName} • Anuncio • ${formatDateTime()}` });
+  if (imageUrl) embed.setImage(imageUrl);
+
+  await channel.send({
+    content: pingRole ? `${pingRole}` : undefined,
+    embeds: [embed],
+    allowedMentions: pingRole ? { roles: [pingRole.id] } : { parse: [] },
+  });
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: anuncio publicado",
+    color: 0x7b2cff,
+    fields: [
+      ["Responsavel", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Canal", `${channel}`],
+      ["Titulo", title],
+    ],
+  });
+  await interaction.reply(hidden({ content: `Anuncio enviado em ${channel}.` }));
+}
+
+async function handleWarnCommand(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = interaction.options.getUser("usuario", true);
+  const store = guildData(interaction.guildId);
+  store.warns[user.id] ||= [];
+
+  if (subcommand === "add") {
+    const reason = interaction.options.getString("motivo", true);
+    const record = {
+      reason,
+      moderatorId: interaction.user.id,
+      createdAt: Date.now(),
+    };
+    store.warns[user.id].push(record);
+    scheduleDataSave();
+    await sendAuditLog(interaction.guild, {
+      title: "Auditoria: aviso aplicado",
+      color: 0xffc857,
+      fields: [
+        ["Moderador", `${interaction.user} (\`${interaction.user.id}\`)`],
+        ["Membro", `${user} (\`${user.id}\`)`],
+        ["Total", String(store.warns[user.id].length)],
+        ["Motivo", reason],
+      ],
+    });
+    await interaction.reply(hidden({ content: `${user} recebeu um aviso. Total: **${store.warns[user.id].length}**.` }));
+    return;
+  }
+
+  if (subcommand === "limpar") {
+    const total = store.warns[user.id].length;
+    store.warns[user.id] = [];
+    scheduleDataSave();
+    await sendAuditLog(interaction.guild, {
+      title: "Auditoria: avisos limpos",
+      color: 0x00ff85,
+      fields: [
+        ["Moderador", `${interaction.user} (\`${interaction.user.id}\`)`],
+        ["Membro", `${user} (\`${user.id}\`)`],
+        ["Avisos removidos", String(total)],
+      ],
+    });
+    await interaction.reply(hidden({ content: `Avisos de ${user} limpos. Removidos: **${total}**.` }));
+    return;
+  }
+
+  const lines = store.warns[user.id]
+    .map((warn, index) => `**${index + 1}.** ${safeField(warn.reason, 260)}\nStaff: <@${warn.moderatorId}> • <t:${Math.floor(warn.createdAt / 1000)}:R>`)
+    .slice(-10);
+  await interaction.reply(hidden({
+    embeds: [baseEmbed(interaction.guild)
+      .setTitle(`Avisos de ${user.username}`)
+      .setDescription(lines.length ? lines.join("\n\n") : "Esse membro nao tem avisos salvos.")],
+  }));
+}
+
+async function handleSuggestionVote(interaction) {
+  const [, vote] = String(interaction.customId).split(":");
+  const emoji = vote === "up" ? "✅" : "❌";
+  await interaction.message.react(emoji).catch(() => null);
+  await interaction.reply(hidden({ content: `Voto registrado: ${vote === "up" ? "aprovar" : "reprovar"}.` }));
 }
 
 async function handleExtraCommand(interaction) {
@@ -1774,6 +2063,11 @@ async function handleButton(interaction) {
 
   if (id.startsWith("x:")) {
     await closeTicket(interaction);
+    return;
+  }
+
+  if (id.startsWith("suggestion_vote:")) {
+    await handleSuggestionVote(interaction);
     return;
   }
 
@@ -3360,6 +3654,8 @@ function guildData(guildId) {
   store.stockMessageId ||= "";
   store.stockMessageIds ||= {};
   store.auditLogChannelId ||= "";
+  store.suggestionChannelId ||= "";
+  store.warns ||= {};
   return store;
 }
 
@@ -3960,7 +4256,7 @@ function ensureStockSchedulerStarted(immediate = true) {
   if (stockSchedulerStarted || !hasStockTargets()) return;
   stockSchedulerStarted = true;
   if (immediate) postStockIfChanged(true).catch((error) => console.error("[STOCK]", error.message));
-  setInterval(() => postStockIfChanged(false), config.stockIntervalMinutes * 60 * 1000);
+  setInterval(() => postStockIfChanged(false, currentStockRotationKind()), config.stockIntervalMinutes * 60 * 1000);
   scheduleNextStockRotationPost();
 }
 
@@ -3997,6 +4293,10 @@ function nextStockRotationInfo() {
   return normal.getTime() <= mirage.getTime()
     ? { kind: "normal", date: normal }
     : { kind: "mirage", date: mirage };
+}
+
+function currentStockRotationKind() {
+  return nextStockRotationInfo().kind === "normal" ? "mirage" : "normal";
 }
 
 function hasStockTargets() {
