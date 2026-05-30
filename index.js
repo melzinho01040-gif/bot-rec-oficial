@@ -2568,6 +2568,8 @@ async function renderStockImage(title, items, nextClock = "") {
   const startX = 270;
   const startY = 125;
   const brand = escapeXml(config.stockBrandName || "Divine Hunters");
+  const font = "DejaVu Sans, Noto Sans, Liberation Sans, Arial, sans-serif";
+  const heavyFont = "DejaVu Sans, Noto Sans, Liberation Sans, Arial, sans-serif";
   const rows = Math.ceil(items.length / 4);
   const bgSvg = stockBackgroundSvg(width, height);
   const cardSvg = items.map((item, index) => {
@@ -2582,8 +2584,8 @@ async function renderStockImage(title, items, nextClock = "") {
         <rect x="${x - 8}" y="${y - 8}" width="${cardWidth + 16}" height="${cardHeight + 16}" rx="24" fill="#4b1591" opacity="0.35" filter="url(#glow)"/>
         <rect x="${x}" y="${y}" width="${cardWidth}" height="${cardHeight}" rx="22" fill="url(#cardGrad)" stroke="#25003f" stroke-width="8"/>
         <rect x="${x + 10}" y="${y + 10}" width="${cardWidth - 20}" height="${cardHeight - 20}" rx="16" fill="#000000" opacity="0.18"/>
-        <text x="${x + cardWidth / 2}" y="${y + 276}" fill="#f7f3ff" font-size="31" font-weight="900" text-anchor="middle" font-family="Arial, Helvetica, sans-serif">${name}</text>
-        <text x="${x + cardWidth / 2}" y="${y + 318}" fill="#17ffc3" font-size="28" font-weight="900" text-anchor="middle" font-family="Arial, Helvetica, sans-serif">${price}</text>
+        <text x="${x + cardWidth / 2}" y="${y + 276}" fill="#f7f3ff" font-size="31" font-weight="900" text-anchor="middle" font-family="${font}">${name}</text>
+        <text x="${x + cardWidth / 2}" y="${y + 318}" fill="#17ffc3" font-size="28" font-weight="900" text-anchor="middle" font-family="${font}">${price}</text>
       </g>`;
   }).join("");
 
@@ -2608,13 +2610,13 @@ async function renderStockImage(title, items, nextClock = "") {
       </defs>
       ${bgSvg}
       <circle cx="112" cy="104" r="68" fill="#14032b" stroke="#7f38e8" stroke-width="5" filter="url(#glow)"/>
-      <text x="112" y="90" fill="#f5ecff" font-size="46" font-weight="900" text-anchor="middle" font-family="Arial Black, Arial, sans-serif">DH</text>
-      <text x="112" y="132" fill="#17ffc3" font-size="18" font-weight="800" text-anchor="middle" font-family="Arial, Helvetica, sans-serif">LIVE STOCK</text>
-      <text x="112" y="210" fill="#f2ebff" font-size="31" font-weight="900" text-anchor="middle" font-family="Arial Black, Arial, sans-serif">${brand}</text>
-      <text x="260" y="72" fill="#ffffff" font-size="52" font-weight="900" font-family="Arial, Helvetica, sans-serif">${escapeXml(title)}</text>
+      <text x="112" y="90" fill="#f5ecff" font-size="46" font-weight="900" text-anchor="middle" font-family="${heavyFont}">DH</text>
+      <text x="112" y="132" fill="#17ffc3" font-size="18" font-weight="800" text-anchor="middle" font-family="${font}">LIVE STOCK</text>
+      <text x="112" y="210" fill="#f2ebff" font-size="31" font-weight="900" text-anchor="middle" font-family="${heavyFont}">${brand}</text>
+      <text x="260" y="72" fill="#ffffff" font-size="52" font-weight="900" font-family="${font}">${escapeXml(title)}</text>
       ${cardSvg}
-      <text x="260" y="${height - 58}" fill="#17ffc3" font-size="26" font-weight="900" font-family="Arial, Helvetica, sans-serif">Proxima atualizacao: ${escapeXml(nextClock)}</text>
-      <text x="260" y="${height - 28}" fill="#a9b6ff" font-size="18" font-family="Arial, Helvetica, sans-serif">Atualizado automaticamente pelo bot</text>
+      <text x="260" y="${height - 58}" fill="#17ffc3" font-size="26" font-weight="900" font-family="${font}">Proxima atualizacao: ${escapeXml(nextClock)}</text>
+      <text x="260" y="${height - 28}" fill="#a9b6ff" font-size="18" font-family="${font}">Atualizado automaticamente pelo bot</text>
     </svg>`);
 
   const composites = [];
@@ -2869,14 +2871,20 @@ function applyEmbedBanner(embed, url) {
 function ensureFontconfigConfig(dir, file) {
   try {
     fs.mkdirSync(dir, { recursive: true });
-    if (fs.existsSync(file)) return;
     fs.writeFileSync(file, [
       '<?xml version="1.0"?>',
       '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">',
       "<fontconfig>",
       "  <dir>/usr/share/fonts</dir>",
+      "  <dir>/usr/share/fonts/truetype</dir>",
+      "  <dir>/usr/share/fonts/truetype/dejavu</dir>",
+      "  <dir>/usr/share/fonts/truetype/liberation</dir>",
+      "  <dir>/usr/share/fonts/opentype</dir>",
       "  <dir>/usr/local/share/fonts</dir>",
       "  <dir>~/.fonts</dir>",
+      "  <alias><family>Arial</family><prefer><family>DejaVu Sans</family><family>Noto Sans</family><family>Liberation Sans</family></prefer></alias>",
+      "  <alias><family>Arial Black</family><prefer><family>DejaVu Sans</family><family>Noto Sans</family><family>Liberation Sans</family></prefer></alias>",
+      "  <alias><family>sans-serif</family><prefer><family>DejaVu Sans</family><family>Noto Sans</family><family>Liberation Sans</family></prefer></alias>",
       "  <cachedir>/tmp/fontconfig-cache</cachedir>",
       "</fontconfig>",
       "",
