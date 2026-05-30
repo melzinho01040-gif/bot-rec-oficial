@@ -11,6 +11,8 @@ Bot de Discord em `index.js` com paineis modernos, embeds, recrutamento, Roblox,
 - Consulta Roblox, avatar, serverinfo, limpeza, lock/unlock, ban, mute/unmute.
 - Tickets, precos, stock automatico, ranking/XP e ferramentas extras da crew.
 - Stock visual mostra nome da fruta, valor em Beli limpo e proxima atualizacao no horario da rotacao do Blox Fruits.
+- Auditoria em embed para recrutamento, aprovacoes, recusas, torneios, eventos e PVP.
+- Sistemas `/torneio participante`, `/evento confirmar` e `/pvp duelo`.
 
 ## Railway
 
@@ -60,10 +62,28 @@ Envia o painel de stock no canal escolhido e ativa atualizacao automatica. O bot
 
 Os offsets podem ser ajustados pelas variaveis `STOCK_NORMAL_OFFSET_HOUR` e `STOCK_MIRAGE_OFFSET_HOUR`.
 
+### `/auditoria setup`
+
+Define o canal onde o bot registra logs bonitos em embed.
+
+### `/torneio participante`
+
+Confirma participante do torneio PVP com bounty e plataforma.
+
+### `/evento confirmar`
+
+Confirma evento e pontuacao de um jogador.
+
+### `/pvp duelo`
+
+Marca duelo PVP com dois jogadores, data, hora e imagem opcional.
+
 ## Variaveis opcionais
 
 - `APPLICATION_LOG_CHANNEL_ID`
 - `APPLICATION_REVIEW_CHANNEL_ID`
+- `AUDIT_LOG_CHANNEL_ID`
+- `PART_CREW_ROLE_ID`
 - `RECRUITMENT_CATEGORY_ID`
 - `STOCK_CHANNEL_ID`
 - `BOOST_CHANNEL_ID`

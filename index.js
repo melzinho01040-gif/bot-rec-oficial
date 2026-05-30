@@ -49,6 +49,7 @@ const config = {
   stockGifUrl: process.env.STOCK_GIF_URL || "",
   applicationLogChannelId: process.env.APPLICATION_LOG_CHANNEL_ID || "",
   applicationReviewChannelId: process.env.APPLICATION_REVIEW_CHANNEL_ID || process.env.REVIEW_CHANNEL_ID || "",
+  auditLogChannelId: process.env.AUDIT_LOG_CHANNEL_ID || process.env.LOG_CHANNEL_ID || "",
   recruitmentCategoryId: process.env.RECRUITMENT_CATEGORY_ID || process.env.APPLICATION_CATEGORY_ID || "",
   stockChannelId: process.env.STOCK_CHANNEL_ID || "",
   stockShowSource: String(process.env.STOCK_SHOW_SOURCE || "false").toLowerCase() === "true",
@@ -59,6 +60,7 @@ const config = {
   staffRoleId: process.env.STAFF_ROLE_ID || "",
   captainRoleId: process.env.CAPTAIN_ROLE_ID || "",
   memberRoleId: process.env.MEMBER_ROLE_ID || "",
+  pendingCrewRoleId: process.env.PART_CREW_ROLE_ID || process.env.PART_OF_CREW_ROLE_ID || process.env.PENDING_CREW_ROLE_ID || "",
   stockApiUrls: parseUrlList(process.env.STOCK_API_URL || ""),
   stockIntervalMinutes: clamp(Number(process.env.STOCK_INTERVAL_MINUTES || 5), 1, 240),
   stockCacheMinutes: clamp(Number(process.env.STOCK_CACHE_MINUTES || 2), 0, 15),
@@ -266,6 +268,67 @@ const commands = [
             .setDescription("Texto do rodape")
             .setMaxLength(2048)
             .setRequired(false),
+        ),
+    ),
+  new SlashCommandBuilder()
+    .setName("torneio")
+    .setDescription("Sistema de torneios PVP.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("participante")
+        .setDescription("Confirma um participante no torneio.")
+        .addUserOption((option) => option.setName("jogador").setDescription("Jogador confirmado").setRequired(true))
+        .addStringOption((option) => option.setName("bounty").setDescription("Bounty do jogador").setRequired(true))
+        .addStringOption((option) => option.setName("plataforma").setDescription("PC, mobile ou console").setRequired(true))
+        .addChannelOption((option) =>
+          option.setName("canal").setDescription("Canal onde enviar").addChannelTypes(ChannelType.GuildText).setRequired(false),
+        )
+        .addStringOption((option) => option.setName("imagem_url").setDescription("Imagem/banner opcional").setRequired(false)),
+    ),
+  new SlashCommandBuilder()
+    .setName("evento")
+    .setDescription("Sistema de eventos da crew.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("confirmar")
+        .setDescription("Confirma resultado/pontos de um evento.")
+        .addUserOption((option) => option.setName("jogador").setDescription("Jogador").setRequired(true))
+        .addStringOption((option) => option.setName("nome").setDescription("Nome do evento").setRequired(true))
+        .addIntegerOption((option) => option.setName("pontos").setDescription("Pontos recebidos").setMinValue(0).setMaxValue(999).setRequired(true))
+        .addChannelOption((option) =>
+          option.setName("canal").setDescription("Canal onde enviar").addChannelTypes(ChannelType.GuildText).setRequired(false),
+        )
+        .addStringOption((option) => option.setName("imagem_url").setDescription("Imagem/banner opcional").setRequired(false)),
+    ),
+  new SlashCommandBuilder()
+    .setName("pvp")
+    .setDescription("Sistema de duelos PVP.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("duelo")
+        .setDescription("Marca um duelo PVP.")
+        .addUserOption((option) => option.setName("jogador1").setDescription("Primeiro jogador").setRequired(true))
+        .addUserOption((option) => option.setName("jogador2").setDescription("Segundo jogador").setRequired(true))
+        .addStringOption((option) => option.setName("data").setDescription("Data do duelo, ex.: 19/05/2026").setRequired(true))
+        .addStringOption((option) => option.setName("hora").setDescription("Hora do duelo, ex.: 19:00").setRequired(true))
+        .addChannelOption((option) =>
+          option.setName("canal").setDescription("Canal onde enviar").addChannelTypes(ChannelType.GuildText).setRequired(false),
+        )
+        .addStringOption((option) => option.setName("imagem_url").setDescription("Imagem/banner opcional").setRequired(false)),
+    ),
+  new SlashCommandBuilder()
+    .setName("auditoria")
+    .setDescription("Configura o canal de auditoria do bot.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("setup")
+        .setDescription("Define o canal onde as auditorias serao enviadas.")
+        .addChannelOption((option) =>
+          option.setName("canal").setDescription("Canal de auditoria").addChannelTypes(ChannelType.GuildText).setRequired(true),
         ),
     ),
   new SlashCommandBuilder()
@@ -791,6 +854,26 @@ async function handleCommand(interaction) {
     }
   }
 
+  if (command === "torneio") {
+    await handleTournamentCommand(interaction);
+    return;
+  }
+
+  if (command === "evento") {
+    await handleEventCommand(interaction);
+    return;
+  }
+
+  if (command === "pvp") {
+    await handlePvpCommand(interaction);
+    return;
+  }
+
+  if (command === "auditoria") {
+    await handleAuditCommand(interaction);
+    return;
+  }
+
   if (command === "setup-staff" || command === "embed-staff") {
     const targetChannelId = getApplicationTargetFromCommand(interaction);
     if (!(await ensureApplicationTarget(interaction, targetChannelId))) return;
@@ -999,6 +1082,129 @@ async function sendCustomCentralEmbed(interaction) {
 
   await channel.send({ embeds: [embed] });
   await interaction.reply(hidden({ content: `Embed enviada em ${channel}.` }));
+}
+
+async function handleTournamentCommand(interaction) {
+  const player = interaction.options.getUser("jogador", true);
+  const bounty = interaction.options.getString("bounty", true);
+  const platform = interaction.options.getString("plataforma", true);
+  const channel = interaction.options.getChannel("canal", false) || interaction.channel;
+  const imageUrl = safeImageUrl(interaction.options.getString("imagem_url", false));
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+
+  const embed = eventStyleEmbed(interaction.guild, 0x8b3dff)
+    .setTitle("⚔️ Novo Participante no Torneio PVP!")
+    .setDescription([
+      `👤 **${player.username}** confirmou presenca!`,
+      `💀 **Bounty:** ${safeField(bounty)}`,
+      `🎮 **Plataforma:** ${safeField(platform)}`,
+    ].join("\n"))
+    .setThumbnail(player.displayAvatarURL({ size: 256 }))
+    .setFooter({ text: `${config.brandName} • Boa sorte no torneio! • ${formatDateTime()}` });
+  if (imageUrl) embed.setImage(imageUrl);
+
+  await channel.send({ embeds: [embed] });
+  await sendAuditLog(interaction.guild, {
+    title: "⚔️ Auditoria: participante confirmado",
+    color: 0x8b3dff,
+    fields: [
+      ["Responsavel", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Jogador", `${player} (\`${player.id}\`)`],
+      ["Canal", `${channel}`],
+      ["Bounty / Plataforma", `${safeField(bounty)} / ${safeField(platform)}`],
+    ],
+  });
+  await interaction.reply(hidden({ content: `Participante confirmado em ${channel}.` }));
+}
+
+async function handleEventCommand(interaction) {
+  const player = interaction.options.getUser("jogador", true);
+  const eventName = interaction.options.getString("nome", true);
+  const points = interaction.options.getInteger("pontos", true);
+  const channel = interaction.options.getChannel("canal", false) || interaction.channel;
+  const imageUrl = safeImageUrl(interaction.options.getString("imagem_url", false));
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+
+  const embed = eventStyleEmbed(interaction.guild, 0x00ff85)
+    .setTitle("🏆 EVENTO CONFIRMADO")
+    .setDescription([
+      `👤 **Player:** ${player}`,
+      `📌 **Evento:** ${safeField(eventName)}`,
+      `⭐ **Pontos:** ${points} pts`,
+    ].join("\n"))
+    .setThumbnail(player.displayAvatarURL({ size: 256 }))
+    .setFooter({ text: `${config.brandName} • Eventos • Hoje as ${formatClock()}` });
+  if (imageUrl) embed.setImage(imageUrl);
+
+  await channel.send({ embeds: [embed] });
+  await sendAuditLog(interaction.guild, {
+    title: "🏆 Auditoria: evento confirmado",
+    color: 0x00ff85,
+    fields: [
+      ["Responsavel", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Player", `${player} (\`${player.id}\`)`],
+      ["Evento", safeField(eventName)],
+      ["Pontos", `${points} pts`],
+      ["Canal", `${channel}`],
+    ],
+  });
+  await interaction.reply(hidden({ content: `Evento confirmado em ${channel}.` }));
+}
+
+async function handlePvpCommand(interaction) {
+  const playerOne = interaction.options.getUser("jogador1", true);
+  const playerTwo = interaction.options.getUser("jogador2", true);
+  const date = interaction.options.getString("data", true);
+  const hour = interaction.options.getString("hora", true);
+  const channel = interaction.options.getChannel("canal", false) || interaction.channel;
+  const imageUrl = safeImageUrl(interaction.options.getString("imagem_url", false));
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+
+  const embed = eventStyleEmbed(interaction.guild, 0x7b2cff)
+    .setTitle("⚔️ DUELO PVP MARCADO")
+    .setDescription([
+      `👤 ${playerOne} **(${playerOne.username})**`,
+      `👤 ${playerTwo} **(${playerTwo.username})**`,
+      "",
+      `📅 **Data:** ${safeField(date)}`,
+      `⏰ **Hora:** ${safeField(hour)}`,
+    ].join("\n"))
+    .setFooter({ text: `${config.brandName} • Arena PVP • ${formatDateTime()}` });
+  if (imageUrl) embed.setImage(imageUrl);
+
+  await channel.send({ embeds: [embed] });
+  await sendAuditLog(interaction.guild, {
+    title: "⚔️ Auditoria: duelo PVP marcado",
+    color: 0x7b2cff,
+    fields: [
+      ["Responsavel", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Jogadores", `${playerOne} vs ${playerTwo}`],
+      ["Data/Hora", `${safeField(date)} as ${safeField(hour)}`],
+      ["Canal", `${channel}`],
+    ],
+  });
+  await interaction.reply(hidden({ content: `Duelo PVP marcado em ${channel}.` }));
+}
+
+async function handleAuditCommand(interaction) {
+  const channel = interaction.options.getChannel("canal", true);
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+
+  const store = guildData(interaction.guildId);
+  store.auditLogChannelId = channel.id;
+  scheduleDataSave();
+
+  await channel.send({
+    embeds: [eventStyleEmbed(interaction.guild, 0x7b2cff)
+      .setTitle("📚 AUDITORIA ATIVADA")
+      .setDescription([
+        `👤 **Responsavel:** ${interaction.user}`,
+        `📌 **Canal:** ${channel}`,
+        "✅ Recrutamento, aprovacoes, recusas, eventos, torneios e PVP serao registrados aqui.",
+      ].join("\n"))
+      .setFooter({ text: `${config.brandName} • Auditoria • ${formatDateTime()}` })],
+  });
+  await interaction.reply(hidden({ content: `Auditoria configurada em ${channel}.` }));
 }
 
 async function handleExtraCommand(interaction) {
@@ -1684,6 +1890,16 @@ async function submitApplication(interaction, application) {
   if (config.applicationCooldownMinutes > 0) {
     applicationCooldowns.set(cooldownKey, Date.now() + config.applicationCooldownMinutes * 60 * 1000);
   }
+  await sendAuditLog(interaction.guild, {
+    title: "📝 Auditoria: formulário recebido",
+    color: 0x7b2cff,
+    fields: [
+      ["Candidato", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Tipo", application.kind],
+      ["Destino", `${channel}`],
+      ["Cargo ao aprovar", roleMention(application.roleId)],
+    ],
+  });
   await safeEditReply(interaction, `Sua aplicacao foi enviada para analise em ${channel}. Boa sorte.`);
 }
 
@@ -1783,6 +1999,16 @@ async function handleReviewButton(interaction) {
     const roleResult = await applyApprovedRole(member, roleId);
     const dmResult = await sendApplicationDm(user, `Sua aplicacao na **${config.brandName}** foi aprovada.`);
     await removeReviewMessage(interaction);
+    await sendAuditLog(interaction.guild, {
+      title: "✅ Auditoria: aplicação aprovada",
+      color: 0x00ff85,
+      fields: [
+        ["Equipe", `${interaction.user} (\`${interaction.user.id}\`)`],
+        ["Candidato", user ? `${user} (\`${user.id}\`)` : `\`${userId}\``],
+        ["Cargo aplicado", roleMention(roleId)],
+        ["Resultado", roleResult],
+      ],
+    });
     await safeEditReply(interaction, `Aplicacao aprovada por ${interaction.user}.\n${roleResult}\n${dmResult}`);
     return;
   }
@@ -1790,12 +2016,30 @@ async function handleReviewButton(interaction) {
   if (action === "deny") {
     const dmResult = await sendApplicationDm(user, `Sua aplicacao na **${config.brandName}** foi recusada por enquanto.`);
     await removeReviewMessage(interaction);
+    await sendAuditLog(interaction.guild, {
+      title: "❌ Auditoria: aplicação recusada",
+      color: 0xff3b5c,
+      fields: [
+        ["Equipe", `${interaction.user} (\`${interaction.user.id}\`)`],
+        ["Candidato", user ? `${user} (\`${user.id}\`)` : `\`${userId}\``],
+        ["DM", dmResult],
+      ],
+    });
     await safeEditReply(interaction, `Aplicacao recusada por ${interaction.user}.\n${dmResult}`);
     return;
   }
 
   if (action === "call") {
     const dmResult = await sendApplicationDm(user, `A equipe da **${config.brandName}** quer falar com voce sobre sua aplicacao.`);
+    await sendAuditLog(interaction.guild, {
+      title: "📨 Auditoria: candidato chamado",
+      color: 0x7b2cff,
+      fields: [
+        ["Equipe", `${interaction.user} (\`${interaction.user.id}\`)`],
+        ["Candidato", user ? `${user} (\`${user.id}\`)` : `\`${userId}\``],
+        ["DM", dmResult],
+      ],
+    });
     await safeEditReply(interaction, dmResult);
     return;
   }
@@ -1847,13 +2091,26 @@ async function applyApprovedRole(member, roleId) {
   if (!member) return "Nao achei o membro no servidor para aplicar cargo.";
   if (!roleId) return "Nenhum cargo foi configurado para aplicar.";
 
+  const messages = [];
   try {
     await member.roles.add(roleId);
-    return `Cargo ${roleMention(roleId)} aplicado.`;
+    messages.push(`Cargo ${roleMention(roleId)} aplicado.`);
   } catch (error) {
     console.warn(`[WARN] Nao consegui aplicar cargo aprovado: ${error.message}`);
-    return `Nao consegui aplicar o cargo ${roleMention(roleId)}. Confira a permissao e a hierarquia do bot.`;
+    messages.push(`Nao consegui aplicar o cargo ${roleMention(roleId)}. Confira a permissao e a hierarquia do bot.`);
   }
+
+  const pendingRole = findPendingCrewRole(member);
+  if (pendingRole && pendingRole.id !== roleId) {
+    await member.roles.remove(pendingRole.id, "Aplicacao aprovada: removendo cargo temporario da crew")
+      .then(() => messages.push(`Cargo temporario ${pendingRole} removido.`))
+      .catch((error) => {
+        console.warn(`[WARN] Nao consegui remover cargo temporario: ${error.message}`);
+        messages.push(`Nao consegui remover o cargo temporario ${pendingRole}.`);
+      });
+  }
+
+  return messages.join("\n");
 }
 
 async function sendApplicationDm(user, message) {
@@ -1861,6 +2118,70 @@ async function sendApplicationDm(user, message) {
   return user.send(message)
     .then(() => "DM enviada ao candidato.")
     .catch(() => "Nao consegui enviar DM ao candidato.");
+}
+
+function findPendingCrewRole(member) {
+  if (!member?.roles?.cache) return null;
+  const configured = normalizeSnowflake(config.pendingCrewRoleId);
+  if (configured && member.roles.cache.has(configured)) return member.roles.cache.get(configured);
+  return member.roles.cache.find((role) => normalizeKey(role.name) === normalizeKey("Parte da crew")) || null;
+}
+
+function eventStyleEmbed(guild, color = config.color) {
+  return new EmbedBuilder()
+    .setColor(color)
+    .setAuthor({ name: config.brandName, iconURL: config.logoUrl || guild?.iconURL({ size: 128 }) || undefined })
+    .setTimestamp();
+}
+
+async function sendAuditLog(guild, audit) {
+  const store = guildData(guild.id);
+  const channel = await resolveChannel(
+    guild,
+    store.auditLogChannelId || config.auditLogChannelId || config.applicationLogChannelId || config.applicationReviewChannelId,
+  );
+  if (!channel?.isTextBased?.()) return false;
+
+  const embed = eventStyleEmbed(guild, audit.color || config.color)
+    .setTitle(audit.title || "📚 Auditoria")
+    .setFooter({ text: `${config.brandName} • Auditoria • ${formatDateTime()}` });
+
+  if (audit.description) embed.setDescription(audit.description);
+  if (audit.thumbnail) embed.setThumbnail(audit.thumbnail);
+  if (audit.image) embed.setImage(audit.image);
+  if (Array.isArray(audit.fields)) {
+    embed.addFields(audit.fields.map(([name, value, inline = false]) => ({
+      name,
+      value: safeField(value),
+      inline,
+    })));
+  }
+
+  await channel.send({ embeds: [embed] }).catch((error) => {
+    console.warn(`[AUDIT] Nao consegui enviar auditoria: ${error.message}`);
+  });
+  return true;
+}
+
+function formatClock(date = new Date()) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: config.timezone,
+  }).format(date);
+}
+
+function formatDateTime(date = new Date()) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: config.timezone,
+  }).format(date);
 }
 
 async function removeReviewMessage(interaction) {
@@ -3022,6 +3343,7 @@ function guildData(guildId) {
   store.inviteMembers ||= {};
   store.stockChannelId ||= "";
   store.stockMessageId ||= "";
+  store.auditLogChannelId ||= "";
   return store;
 }
 
