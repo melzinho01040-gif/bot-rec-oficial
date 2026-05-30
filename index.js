@@ -2567,9 +2567,7 @@ async function renderStockImage(title, items, nextClock = "") {
   const gap = 40;
   const startX = 270;
   const startY = 125;
-  const brand = escapeXml(config.stockBrandName || "Divine Hunters");
-  const font = "DejaVu Sans, Noto Sans, Liberation Sans, Arial, sans-serif";
-  const heavyFont = "DejaVu Sans, Noto Sans, Liberation Sans, Arial, sans-serif";
+  const brand = config.stockBrandName || "Divine Hunters";
   const rows = Math.ceil(items.length / 4);
   const bgSvg = stockBackgroundSvg(width, height);
   const cardSvg = items.map((item, index) => {
@@ -2577,15 +2575,15 @@ async function renderStockImage(title, items, nextClock = "") {
     const row = Math.floor(index / 4);
     const x = startX + col * (cardWidth + gap);
     const y = startY + row * (cardHeight + 55);
-    const name = escapeXml(item.name);
-    const price = escapeXml(item.price || "?");
+    const name = pixelTextSvg(item.name, x + cardWidth / 2, y + 258, 5, "#f7f3ff", "middle");
+    const price = pixelTextSvg(item.price || "?", x + cardWidth / 2, y + 305, 5, "#17ffc3", "middle");
     return `
       <g>
         <rect x="${x - 8}" y="${y - 8}" width="${cardWidth + 16}" height="${cardHeight + 16}" rx="24" fill="#4b1591" opacity="0.35" filter="url(#glow)"/>
         <rect x="${x}" y="${y}" width="${cardWidth}" height="${cardHeight}" rx="22" fill="url(#cardGrad)" stroke="#25003f" stroke-width="8"/>
         <rect x="${x + 10}" y="${y + 10}" width="${cardWidth - 20}" height="${cardHeight - 20}" rx="16" fill="#000000" opacity="0.18"/>
-        <text x="${x + cardWidth / 2}" y="${y + 276}" fill="#f7f3ff" font-size="31" font-weight="900" text-anchor="middle" font-family="${font}">${name}</text>
-        <text x="${x + cardWidth / 2}" y="${y + 318}" fill="#17ffc3" font-size="28" font-weight="900" text-anchor="middle" font-family="${font}">${price}</text>
+        ${name}
+        ${price}
       </g>`;
   }).join("");
 
@@ -2610,13 +2608,13 @@ async function renderStockImage(title, items, nextClock = "") {
       </defs>
       ${bgSvg}
       <circle cx="112" cy="104" r="68" fill="#14032b" stroke="#7f38e8" stroke-width="5" filter="url(#glow)"/>
-      <text x="112" y="90" fill="#f5ecff" font-size="46" font-weight="900" text-anchor="middle" font-family="${heavyFont}">DH</text>
-      <text x="112" y="132" fill="#17ffc3" font-size="18" font-weight="800" text-anchor="middle" font-family="${font}">LIVE STOCK</text>
-      <text x="112" y="210" fill="#f2ebff" font-size="31" font-weight="900" text-anchor="middle" font-family="${heavyFont}">${brand}</text>
-      <text x="260" y="72" fill="#ffffff" font-size="52" font-weight="900" font-family="${font}">${escapeXml(title)}</text>
+      ${pixelTextSvg("DH", 112, 70, 7, "#f5ecff", "middle")}
+      ${pixelTextSvg("LIVE STOCK", 112, 122, 3, "#17ffc3", "middle")}
+      ${pixelTextSvg(brand, 112, 188, 4, "#f2ebff", "middle")}
+      ${pixelTextSvg(title, 260, 38, 7, "#ffffff", "start")}
       ${cardSvg}
-      <text x="260" y="${height - 58}" fill="#17ffc3" font-size="26" font-weight="900" font-family="${font}">Proxima atualizacao: ${escapeXml(nextClock)}</text>
-      <text x="260" y="${height - 28}" fill="#a9b6ff" font-size="18" font-family="${font}">Atualizado automaticamente pelo bot</text>
+      ${pixelTextSvg(`Proxima atualizacao: ${nextClock}`, 260, height - 82, 4, "#17ffc3", "start")}
+      ${pixelTextSvg("Atualizado automaticamente pelo bot", 260, height - 42, 3, "#a9b6ff", "start")}
     </svg>`);
 
   const composites = [];
@@ -2711,6 +2709,37 @@ function stockBeliText(value) {
     .replace(/^\$\s*/, "")
     .replace(/[^\d,.]/g, "")
     .trim();
+}
+
+function pixelTextSvg(text, x, y, scale = 4, color = "#ffffff", align = "start") {
+  const value = stripAccents(String(text || "").toUpperCase()).replace(/[^A-Z0-9 ,.:!?/\-]/g, "");
+  const spacing = scale;
+  const charWidth = 5 * scale;
+  const charHeight = 7 * scale;
+  const totalWidth = [...value].reduce((sum, char) => {
+    if (char === " ") return sum + 3 * scale + spacing;
+    return sum + charWidth + spacing;
+  }, 0);
+  let cursor = align === "middle" ? x - totalWidth / 2 : x;
+  const rects = [];
+
+  for (const char of value) {
+    if (char === " ") {
+      cursor += 3 * scale + spacing;
+      continue;
+    }
+
+    const glyph = PIXEL_FONT[char] || PIXEL_FONT["?"];
+    for (let row = 0; row < glyph.length; row += 1) {
+      for (let col = 0; col < glyph[row].length; col += 1) {
+        if (glyph[row][col] !== "1") continue;
+        rects.push(`<rect x="${Math.round(cursor + col * scale)}" y="${Math.round(y + row * scale)}" width="${scale}" height="${scale}" fill="${color}"/>`);
+      }
+    }
+    cursor += charWidth + spacing;
+  }
+
+  return `<g shape-rendering="crispEdges">${rects.join("")}</g>`;
 }
 
 function escapeXml(value) {
@@ -3475,6 +3504,10 @@ function cleanFruitName(name) {
     .replace(/ Fruit$/i, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function stripAccents(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
 function normalizeFruitName(name) {
@@ -4424,6 +4457,52 @@ const EMOJI_NAMES = {
   sword: ["vl_sword", "void_sword", "sword"],
   ticket: ["vl_ticket", "void_ticket", "ticket"],
   warn: ["vl_warn", "void_warn", "warn"],
+};
+
+const PIXEL_FONT = {
+  A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+  B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
+  C: ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
+  D: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
+  E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+  F: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
+  G: ["01111", "10000", "10000", "10111", "10001", "10001", "01111"],
+  H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+  I: ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
+  J: ["00111", "00010", "00010", "00010", "00010", "10010", "01100"],
+  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
+  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+  M: ["10001", "11011", "10101", "10101", "10001", "10001", "10001"],
+  N: ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
+  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
+  P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
+  Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
+  R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+  T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
+  U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+  V: ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
+  W: ["10001", "10001", "10001", "10101", "10101", "10101", "01010"],
+  X: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
+  Y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
+  Z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
+  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
+  "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "10000", "11110", "00001", "00001", "11110"],
+  "6": ["01110", "10000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
+  ",": ["00000", "00000", "00000", "00000", "00000", "00100", "01000"],
+  ".": ["00000", "00000", "00000", "00000", "00000", "01100", "01100"],
+  ":": ["00000", "01100", "01100", "00000", "01100", "01100", "00000"],
+  "!": ["00100", "00100", "00100", "00100", "00100", "00000", "00100"],
+  "?": ["01110", "10001", "00001", "00010", "00100", "00000", "00100"],
+  "/": ["00001", "00010", "00010", "00100", "01000", "01000", "10000"],
+  "-": ["00000", "00000", "00000", "11111", "00000", "00000", "00000"],
 };
 
 const FRUIT_META = Object.fromEntries([
