@@ -81,6 +81,7 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildInvites,
+    GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildExpressions || GatewayIntentBits.GuildEmojisAndStickers,
   ].filter(Boolean),
 });
@@ -96,6 +97,7 @@ const XP_COOLDOWN_MS = 60000;
 const data = loadData();
 const xpCooldowns = new Map();
 const inviteCache = new Map();
+const spamBuckets = new Map();
 let dataSaveTimer = null;
 let fruityBloxActionCache = { id: "", expiresAt: 0 };
 
@@ -318,6 +320,19 @@ const commands = [
           option.setName("canal").setDescription("Canal onde enviar").addChannelTypes(ChannelType.GuildText).setRequired(false),
         )
         .addStringOption((option) => option.setName("imagem_url").setDescription("Imagem/banner opcional").setRequired(false)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("resultado")
+        .setDescription("Registra resultado no ranking PVP.")
+        .addUserOption((option) => option.setName("vencedor").setDescription("Quem venceu").setRequired(true))
+        .addUserOption((option) => option.setName("perdedor").setDescription("Quem perdeu").setRequired(true))
+        .addStringOption((option) => option.setName("observacao").setDescription("Detalhe opcional").setMaxLength(500).setRequired(false)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("ranking")
+        .setDescription("Mostra ranking PVP da crew."),
     ),
   new SlashCommandBuilder()
     .setName("auditoria")
@@ -420,6 +435,66 @@ const commands = [
         .setName("limpar")
         .setDescription("Limpa os avisos de um membro.")
         .addUserOption((option) => option.setName("usuario").setDescription("Membro limpo").setRequired(true)),
+    ),
+  new SlashCommandBuilder()
+    .setName("meta")
+    .setDescription("Sistema de metas da crew.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand.setName("criar").setDescription("Cria uma meta.")
+        .addStringOption((option) => option.setName("nome").setDescription("Nome da meta").setRequired(true))
+        .addIntegerOption((option) => option.setName("alvo").setDescription("Valor alvo").setMinValue(1).setRequired(true)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("progresso").setDescription("Adiciona progresso a uma meta.")
+        .addStringOption((option) => option.setName("nome").setDescription("Nome da meta").setRequired(true))
+        .addIntegerOption((option) => option.setName("valor").setDescription("Valor para somar").setMinValue(1).setRequired(true))
+        .addUserOption((option) => option.setName("membro").setDescription("Membro responsavel").setRequired(false)),
+    )
+    .addSubcommand((subcommand) => subcommand.setName("ranking").setDescription("Mostra metas ativas.")),
+  new SlashCommandBuilder()
+    .setName("presenca")
+    .setDescription("Cria painel de confirmacao de presenca.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand.setName("criar").setDescription("Cria uma presenca com botao.")
+        .addStringOption((option) => option.setName("evento").setDescription("Nome do evento").setRequired(true))
+        .addStringOption((option) => option.setName("data").setDescription("Data/hora").setRequired(true))
+        .addChannelOption((option) => option.setName("canal").setDescription("Canal").addChannelTypes(ChannelType.GuildText).setRequired(false)),
+    ),
+  new SlashCommandBuilder()
+    .setName("plantao")
+    .setDescription("Controle de plantao da staff.")
+    .addSubcommand((subcommand) => subcommand.setName("abrir").setDescription("Entra em plantao."))
+    .addSubcommand((subcommand) => subcommand.setName("fechar").setDescription("Sai do plantao."))
+    .addSubcommand((subcommand) => subcommand.setName("status").setDescription("Mostra quem esta em plantao.")),
+  new SlashCommandBuilder()
+    .setName("blacklist")
+    .setDescription("Blacklist interna da crew.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand.setName("add").setDescription("Adiciona alguem na blacklist.")
+        .addStringOption((option) => option.setName("alvo").setDescription("ID, usuario, Roblox ou tag").setRequired(true))
+        .addStringOption((option) => option.setName("motivo").setDescription("Motivo").setMaxLength(900).setRequired(true)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("remover").setDescription("Remove da blacklist.")
+        .addStringOption((option) => option.setName("alvo").setDescription("Alvo").setRequired(true)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("check").setDescription("Consulta blacklist.")
+        .addStringOption((option) => option.setName("alvo").setDescription("Alvo").setRequired(true)),
+    )
+    .addSubcommand((subcommand) => subcommand.setName("listar").setDescription("Lista blacklist.")),
+  new SlashCommandBuilder()
+    .setName("votacao")
+    .setDescription("Cria votacao simples.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand.setName("criar").setDescription("Cria votacao com aprovar/reprovar.")
+        .addStringOption((option) => option.setName("titulo").setDescription("Titulo").setRequired(true))
+        .addStringOption((option) => option.setName("descricao").setDescription("Descricao").setMaxLength(1800).setRequired(true))
+        .addChannelOption((option) => option.setName("canal").setDescription("Canal").addChannelTypes(ChannelType.GuildText).setRequired(false)),
     ),
   new SlashCommandBuilder()
     .setName("setup-staff")
@@ -928,6 +1003,35 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 
 client.on(Events.MessageCreate, (message) => {
   trackMessageXp(message);
+  guardMessage(message).catch((error) => console.warn(`[GUARD] ${error.message}`));
+});
+
+client.on(Events.MessageDelete, async (message) => {
+  if (!message.guild || message.author?.bot) return;
+  await sendAuditLog(message.guild, {
+    title: "Auditoria: mensagem apagada",
+    color: 0xffc857,
+    fields: [
+      ["Autor", message.author ? `${message.author} (\`${message.author.id}\`)` : "Nao informado"],
+      ["Canal", `${message.channel}`],
+      ["Conteudo", safeField(message.content || "Sem texto/cache")],
+    ],
+  });
+});
+
+client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
+  if (!newMessage.guild || newMessage.author?.bot) return;
+  if ((oldMessage.content || "") === (newMessage.content || "")) return;
+  await sendAuditLog(newMessage.guild, {
+    title: "Auditoria: mensagem editada",
+    color: 0x7b2cff,
+    fields: [
+      ["Autor", `${newMessage.author} (\`${newMessage.author.id}\`)`],
+      ["Canal", `${newMessage.channel}`],
+      ["Antes", safeField(oldMessage.content || "Sem cache")],
+      ["Depois", safeField(newMessage.content || "Sem texto")],
+    ],
+  });
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
@@ -1026,6 +1130,31 @@ async function handleCommand(interaction) {
 
   if (command === "warn") {
     await handleWarnCommand(interaction);
+    return;
+  }
+
+  if (command === "meta") {
+    await handleGoalCommand(interaction);
+    return;
+  }
+
+  if (command === "presenca") {
+    await handlePresenceCommand(interaction);
+    return;
+  }
+
+  if (command === "plantao") {
+    await handleShiftCommand(interaction);
+    return;
+  }
+
+  if (command === "blacklist") {
+    await handleBlacklistCommand(interaction);
+    return;
+  }
+
+  if (command === "votacao") {
+    await handlePollCommand(interaction);
     return;
   }
 
@@ -1311,6 +1440,38 @@ async function handleEventCommand(interaction) {
 }
 
 async function handlePvpCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  if (sub === "resultado") {
+    const winner = interaction.options.getUser("vencedor", true);
+    const loser = interaction.options.getUser("perdedor", true);
+    const note = interaction.options.getString("observacao") || "Sem observacao";
+    const store = guildData(interaction.guildId);
+    const win = pvpRecord(store, winner.id);
+    const lose = pvpRecord(store, loser.id);
+    win.wins += 1;
+    win.streak += 1;
+    lose.losses += 1;
+    lose.streak = 0;
+    store.pvp.history.push({ winnerId: winner.id, loserId: loser.id, note, by: interaction.user.id, at: Date.now() });
+    store.pvp.history = store.pvp.history.slice(-100);
+    scheduleDataSave();
+    await interaction.reply({ embeds: [baseEmbed(interaction.guild)
+      .setTitle("Resultado PVP registrado")
+      .setDescription(`${winner} venceu ${loser}.\n${safeField(note)}`)
+      .addFields({ name: "Streak", value: `${winner}: **${win.streak}**`, inline: false })] });
+    return;
+  }
+  if (sub === "ranking") {
+    const store = guildData(interaction.guildId);
+    const lines = Object.entries(store.pvp.players)
+      .map(([userId, record]) => ({ userId, ...record, score: (record.wins || 0) * 3 - (record.losses || 0) }))
+      .sort((a, b) => b.score - a.score || b.wins - a.wins)
+      .slice(0, 10)
+      .map((item, index) => `**${index + 1}.** <@${item.userId}> - ${item.wins || 0}W/${item.losses || 0}L | streak ${item.streak || 0}`);
+    await interaction.reply({ embeds: [baseEmbed(interaction.guild).setTitle("Ranking PVP").setDescription(lines.length ? lines.join("\n") : "Sem resultados PVP ainda.")] });
+    return;
+  }
+
   const playerOne = interaction.options.getUser("jogador1", true);
   const playerTwo = interaction.options.getUser("jogador2", true);
   const date = interaction.options.getString("data", true);
@@ -1536,6 +1697,138 @@ async function handleWarnCommand(interaction) {
       .setTitle(`Avisos de ${user.username}`)
       .setDescription(lines.length ? lines.join("\n\n") : "Esse membro nao tem avisos salvos.")],
   }));
+}
+
+async function handleGoalCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  const store = guildData(interaction.guildId);
+  if (sub === "criar") {
+    const name = interaction.options.getString("nome", true).slice(0, 80);
+    const target = interaction.options.getInteger("alvo", true);
+    store.goals[normalizeKey(name)] = { name, target, current: 0, byUser: {}, createdBy: interaction.user.id, createdAt: Date.now() };
+    scheduleDataSave();
+    await interaction.reply({ embeds: [baseEmbed(interaction.guild).setTitle("Meta criada").setDescription(`**${name}**\nProgresso: **0/${target}**`)] });
+    return;
+  }
+  if (sub === "progresso") {
+    const key = normalizeKey(interaction.options.getString("nome", true));
+    const goal = store.goals[key];
+    if (!goal) return interaction.reply(hidden({ content: "Nao achei essa meta." }));
+    const value = interaction.options.getInteger("valor", true);
+    const user = interaction.options.getUser("membro") || interaction.user;
+    goal.current = Math.min(goal.target, (goal.current || 0) + value);
+    goal.byUser[user.id] = (goal.byUser[user.id] || 0) + value;
+    scheduleDataSave();
+    await interaction.reply({ embeds: [goalEmbed(interaction.guild, goal)] });
+    return;
+  }
+  const goals = Object.values(store.goals).slice(-10);
+  await interaction.reply({ embeds: [baseEmbed(interaction.guild).setTitle("Metas da crew").setDescription(goals.length ? goals.map((goal) => goalLine(goal)).join("\n") : "Nenhuma meta ativa.")] });
+}
+
+async function handlePresenceCommand(interaction) {
+  const eventName = interaction.options.getString("evento", true).slice(0, 120);
+  const date = interaction.options.getString("data", true).slice(0, 80);
+  const channel = interaction.options.getChannel("canal", false) || interaction.channel;
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+  const id = `${Date.now()}`;
+  const store = guildData(interaction.guildId);
+  store.presences[id] = { id, eventName, date, members: {}, createdBy: interaction.user.id, createdAt: Date.now() };
+  scheduleDataSave();
+  await channel.send({
+    embeds: [presenceEmbed(interaction.guild, store.presences[id])],
+    components: [new ActionRowBuilder().addComponents(button(`presence_join:${id}`, "Confirmar presença", ButtonStyle.Success, "approve", interaction.guild))],
+  });
+  await interaction.reply(hidden({ content: `Painel de presenca enviado em ${channel}.` }));
+}
+
+async function handleShiftCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  const store = guildData(interaction.guildId);
+  if (sub === "abrir") {
+    store.shifts[interaction.user.id] = { userId: interaction.user.id, since: Date.now() };
+    scheduleDataSave();
+    await interaction.reply({ embeds: [baseEmbed(interaction.guild).setTitle("Plantao aberto").setDescription(`${interaction.user} entrou em plantao.`)] });
+    return;
+  }
+  if (sub === "fechar") {
+    const existed = delete store.shifts[interaction.user.id];
+    scheduleDataSave();
+    await interaction.reply(hidden({ content: existed ? "Voce saiu do plantao." : "Voce nao estava em plantao." }));
+    return;
+  }
+  const lines = Object.values(store.shifts).map((shift) => `<@${shift.userId}> desde <t:${Math.floor(shift.since / 1000)}:R>`);
+  await interaction.reply({ embeds: [baseEmbed(interaction.guild).setTitle("Staff em plantao").setDescription(lines.length ? lines.join("\n") : "Ninguem em plantao agora.")] });
+}
+
+async function handleBlacklistCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  const store = guildData(interaction.guildId);
+  const target = interaction.options.getString("alvo", false);
+  const key = normalizeBlacklistKey(target);
+  if (sub === "add") {
+    const reason = interaction.options.getString("motivo", true);
+    store.blacklist[key] = { target, reason, by: interaction.user.id, at: Date.now() };
+    scheduleDataSave();
+    await interaction.reply(hidden({ content: `Blacklist adicionada: **${target}**.` }));
+    return;
+  }
+  if (sub === "remover") {
+    const removed = delete store.blacklist[key];
+    scheduleDataSave();
+    await interaction.reply(hidden({ content: removed ? "Removido da blacklist." : "Nao achei esse alvo." }));
+    return;
+  }
+  if (sub === "check") {
+    const hit = store.blacklist[key];
+    await interaction.reply(hidden({ content: hit ? `Encontrado: **${hit.target}**\nMotivo: ${hit.reason}\nPor: <@${hit.by}>` : "Nao esta na blacklist." }));
+    return;
+  }
+  const lines = Object.values(store.blacklist).slice(-15).map((item) => `**${item.target}** - ${safeField(item.reason, 160)} (<@${item.by}>)`);
+  await interaction.reply(hidden({ embeds: [baseEmbed(interaction.guild).setTitle("Blacklist interna").setDescription(lines.length ? lines.join("\n") : "Blacklist vazia.")] }));
+}
+
+async function handlePollCommand(interaction) {
+  const title = interaction.options.getString("titulo", true).slice(0, 120);
+  const description = interaction.options.getString("descricao", true);
+  const channel = interaction.options.getChannel("canal", false) || interaction.channel;
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+  const id = `${Date.now()}`;
+  const store = guildData(interaction.guildId);
+  store.polls[id] = { id, title, description, yes: {}, no: {}, createdBy: interaction.user.id, createdAt: Date.now() };
+  scheduleDataSave();
+  await channel.send({
+    embeds: [pollEmbed(interaction.guild, store.polls[id])],
+    components: [new ActionRowBuilder().addComponents(
+      button(`poll_vote:${id}:yes`, "Aprovar", ButtonStyle.Success, "approve", interaction.guild),
+      button(`poll_vote:${id}:no`, "Reprovar", ButtonStyle.Danger, "deny", interaction.guild),
+    )],
+  });
+  await interaction.reply(hidden({ content: `Votacao enviada em ${channel}.` }));
+}
+
+async function handlePresenceButton(interaction) {
+  const [, id] = String(interaction.customId).split(":");
+  const store = guildData(interaction.guildId);
+  const presence = store.presences[id];
+  if (!presence) return interaction.reply(hidden({ content: "Essa presenca nao existe mais." }));
+  presence.members[interaction.user.id] = { userId: interaction.user.id, at: Date.now() };
+  scheduleDataSave();
+  await interaction.message.edit({ embeds: [presenceEmbed(interaction.guild, presence)] }).catch(() => {});
+  await interaction.reply(hidden({ content: "Presenca confirmada." }));
+}
+
+async function handlePollVote(interaction) {
+  const [, , id, vote] = String(interaction.customId).split(":");
+  const store = guildData(interaction.guildId);
+  const poll = store.polls[id];
+  if (!poll) return interaction.reply(hidden({ content: "Essa votacao nao existe mais." }));
+  delete poll.yes[interaction.user.id];
+  delete poll.no[interaction.user.id];
+  poll[vote === "no" ? "no" : "yes"][interaction.user.id] = Date.now();
+  scheduleDataSave();
+  await interaction.message.edit({ embeds: [pollEmbed(interaction.guild, poll)] }).catch(() => {});
+  await interaction.reply(hidden({ content: "Voto registrado." }));
 }
 
 async function handleSuggestionVote(interaction) {
@@ -2260,6 +2553,16 @@ async function handleButton(interaction) {
     return;
   }
 
+  if (id.startsWith("presence_join:")) {
+    await handlePresenceButton(interaction);
+    return;
+  }
+
+  if (id.startsWith("poll_vote:")) {
+    await handlePollVote(interaction);
+    return;
+  }
+
   if (id.startsWith("rec_close:")) {
     await closeRecruitmentChannel(interaction);
     return;
@@ -2351,6 +2654,20 @@ async function submitApplication(interaction, application) {
 
   const robloxAnswer = answers.find((answer) => /roblox/i.test(answer.label));
   const roblox = robloxAnswer ? await getRobloxProfile(robloxAnswer.value).catch(() => null) : null;
+  const blacklistHit = findBlacklistHit(interaction.guildId, [interaction.user.id, interaction.user.tag, robloxAnswer?.value, roblox?.name].filter(Boolean));
+  if (blacklistHit) {
+    await sendAuditLog(interaction.guild, {
+      title: "Auditoria: formulario bloqueado por blacklist",
+      color: 0xff3b5c,
+      fields: [
+        ["Candidato", `${interaction.user} (\`${interaction.user.id}\`)`],
+        ["Alvo blacklist", blacklistHit.target],
+        ["Motivo", blacklistHit.reason],
+      ],
+    });
+    await safeEditReply(interaction, "Sua aplicacao nao pode ser enviada no momento. A equipe foi avisada.");
+    return;
+  }
   const channel = await resolveApplicationDestination(interaction, application, answers, roblox);
   const reviewId = `${interaction.user.id}:${application.kind}:${Date.now()}`;
 
@@ -4112,6 +4429,14 @@ function guildData(guildId) {
   store.auditLogChannelId ||= "";
   store.suggestionChannelId ||= "";
   store.warns ||= {};
+  store.goals ||= {};
+  store.presences ||= {};
+  store.shifts ||= {};
+  store.blacklist ||= {};
+  store.polls ||= {};
+  store.pvp ||= {};
+  store.pvp.players ||= {};
+  store.pvp.history ||= [];
   store.tickets ||= {};
   store.tickets.openByUser ||= {};
   return store;
@@ -4143,6 +4468,67 @@ function crewMemberEmbed(guild, record) {
     );
 }
 
+function pvpRecord(store, userId) {
+  store.pvp.players[userId] ||= { wins: 0, losses: 0, streak: 0 };
+  return store.pvp.players[userId];
+}
+
+function goalEmbed(guild, goal) {
+  return baseEmbed(guild)
+    .setTitle(`Meta: ${goal.name}`)
+    .setDescription(goalLine(goal))
+    .addFields({ name: "Top contribuintes", value: topContributors(goal.byUser) || "Sem contribuicoes detalhadas." });
+}
+
+function goalLine(goal) {
+  const percent = Math.floor(((goal.current || 0) / Math.max(1, goal.target || 1)) * 100);
+  return `**${goal.name}** - ${goal.current || 0}/${goal.target} (${Math.min(100, percent)}%)`;
+}
+
+function topContributors(byUser = {}) {
+  return Object.entries(byUser)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 5)
+    .map(([userId, value], index) => `**${index + 1}.** <@${userId}> - ${value}`)
+    .join("\n");
+}
+
+function presenceEmbed(guild, presence) {
+  const members = Object.keys(presence.members || {});
+  return baseEmbed(guild)
+    .setTitle(`Presenca: ${presence.eventName}`)
+    .setDescription(`Data: **${presence.date}**\nConfirmados: **${members.length}**`)
+    .addFields({ name: "Lista", value: members.length ? members.map((id) => `<@${id}>`).slice(0, 30).join("\n") : "Ninguem confirmou ainda." })
+    .setTimestamp();
+}
+
+function pollEmbed(guild, poll) {
+  const yes = Object.keys(poll.yes || {}).length;
+  const no = Object.keys(poll.no || {}).length;
+  return baseEmbed(guild)
+    .setTitle(`Votacao: ${poll.title}`)
+    .setDescription(poll.description)
+    .addFields(
+      { name: "Aprovar", value: String(yes), inline: true },
+      { name: "Reprovar", value: String(no), inline: true },
+      { name: "Total", value: String(yes + no), inline: true },
+    )
+    .setTimestamp();
+}
+
+function normalizeBlacklistKey(value) {
+  return normalizeKey(value).replace(/[^a-z0-9]/g, "");
+}
+
+function findBlacklistHit(guildId, values) {
+  const blacklist = guildData(guildId).blacklist || {};
+  for (const value of values) {
+    const hit = blacklist[normalizeBlacklistKey(value)];
+    if (hit) return hit;
+  }
+  return null;
+}
+
 function xpRecord(guildId, userId) {
   data.xp ||= {};
   data.xp[guildId] ||= {};
@@ -4156,6 +4542,35 @@ function xpLevel(xp) {
 
 function xpForLevel(level) {
   return Math.max(0, level) * Math.max(0, level) * 100;
+}
+
+async function guardMessage(message) {
+  if (!message.guild || message.author?.bot || !message.content) return;
+  const member = message.member;
+  if (member?.permissions?.has(PermissionFlagsBits.ManageMessages)) return;
+
+  const content = message.content;
+  const hasInvite = /(discord\.gg|discord\.com\/invite|discordapp\.com\/invite)/i.test(content);
+  const hasBadLink = /https?:\/\/\S+/i.test(content) && !/roblox\.com|youtube\.com|youtu\.be|discord\.com/i.test(content);
+  const now = Date.now();
+  const key = `${message.guildId}:${message.author.id}`;
+  const bucket = (spamBuckets.get(key) || []).filter((time) => now - time < 7000);
+  bucket.push(now);
+  spamBuckets.set(key, bucket);
+
+  if (hasInvite || hasBadLink || bucket.length >= 6) {
+    await message.delete().catch(() => {});
+    await sendAuditLog(message.guild, {
+      title: "Auditoria: anti-spam/anti-link",
+      color: 0xff3b5c,
+      fields: [
+        ["Usuario", `${message.author} (\`${message.author.id}\`)`],
+        ["Canal", `${message.channel}`],
+        ["Motivo", bucket.length >= 6 ? "Flood/spam" : "Link bloqueado"],
+        ["Conteudo", safeField(content)],
+      ],
+    });
+  }
 }
 
 function trackMessageXp(message) {
