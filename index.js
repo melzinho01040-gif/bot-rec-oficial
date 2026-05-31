@@ -41,7 +41,7 @@ const config = {
   clientId: process.env.CLIENT_ID,
   guildId: process.env.GUILD_ID,
   registerCommands: String(process.env.REGISTER_COMMANDS || "false").toLowerCase() === "true",
-  brandName: process.env.BRAND_NAME || "Kitsune Warriors",
+  brandName: process.env.BRAND_NAME || "Divine Hunters",
   color: parseColor(process.env.BRAND_COLOR || process.env.EMBED_COLOR || process.env.COLOR || "7b2cff"),
   bannerUrl: process.env.BANNER_URL || "",
   logoUrl: process.env.LOGO_URL || "",
@@ -53,7 +53,7 @@ const config = {
   recruitmentCategoryId: process.env.RECRUITMENT_CATEGORY_ID || process.env.APPLICATION_CATEGORY_ID || "",
   stockChannelId: process.env.STOCK_CHANNEL_ID || "",
   stockShowSource: String(process.env.STOCK_SHOW_SOURCE || "false").toLowerCase() === "true",
-  stockBrandName: process.env.STOCK_BRAND_NAME || "Kitsune Warriors",
+  stockBrandName: process.env.STOCK_BRAND_NAME || "Divine Hunters",
   stockLogoUrl: process.env.STOCK_LOGO_URL || "",
   boostChannelId: process.env.BOOST_CHANNEL_ID || "",
   ticketCategoryId: process.env.TICKET_CATEGORY_ID || "",
@@ -1078,7 +1078,7 @@ async function handleCommand(interaction) {
     scheduleDataSave();
     updateLastStockHashes(stock, ["normal", "mirage"]);
     ensureStockSchedulerStarted(false);
-    await safeEditReply(interaction, `Stock configurado em ${targetChannel}. Agora eu edito mensagens separadas: Normal ${messages.normal?.url || "sem dados"} | Mirage ${messages.mirage?.url || "sem dados"}.`);
+    await safeEditReply(interaction, `Stock configurado em ${targetChannel}. A partir de agora eu mando uma nova imagem a cada atualizacao: Normal ${messages.normal?.url || "sem dados"} | Mirage ${messages.mirage?.url || "sem dados"}.`);
     return;
   }
 
@@ -2260,6 +2260,11 @@ async function handleButton(interaction) {
     return;
   }
 
+  if (id.startsWith("rec_close:")) {
+    await closeRecruitmentChannel(interaction);
+    return;
+  }
+
   if (id.startsWith("review_")) {
     await handleReviewButton(interaction);
   }
@@ -2360,13 +2365,17 @@ async function submitApplication(interaction, application) {
     button(`review_deny:${interaction.user.id}:none`, "Recusar", ButtonStyle.Danger, "deny", interaction.guild),
     button(`review_call:${interaction.user.id}:none`, "Enviar DM", ButtonStyle.Secondary, "support", interaction.guild),
   );
+  const components = [row];
+  if (isRecruitmentApplicationChannel(channel, application, interaction.user.id)) {
+    components.push(recruitmentChannelControlRow(interaction.guild, interaction.user.id));
+  }
   const mentionPayload = applicationMentionPayload(interaction, application);
 
   let sent = false;
   await channel.send({
     ...mentionPayload,
     embeds: [embed],
-    components: [row],
+    components,
   }).then(() => {
     sent = true;
   }).catch(async (error) => {
@@ -2469,6 +2478,13 @@ async function createRecruitmentApplicationChannel(interaction, application, ans
   });
 }
 
+function isRecruitmentApplicationChannel(channel, application, userId) {
+  return application.kind === "Recrutamento"
+    && normalizeSnowflake(application.categoryId)
+    && channel?.parentId === application.categoryId
+    && String(channel.topic || "").includes(userId);
+}
+
 async function handleReviewButton(interaction) {
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
     await interaction.reply(hidden({ content: "So a equipe pode usar os botoes de analise." }));
@@ -2534,9 +2550,42 @@ async function handleReviewButton(interaction) {
   await safeEditReply(interaction, "Esse botao de analise esta invalido.");
 }
 
+async function closeRecruitmentChannel(interaction) {
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels) && !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.reply(hidden({ content: "So a equipe pode fechar canal de recrutamento." }));
+    return;
+  }
+
+  const [, candidateId] = String(interaction.customId).split(":");
+  if (!interaction.channel || interaction.channel.type !== ChannelType.GuildText) {
+    await interaction.reply(hidden({ content: "Esse botao so funciona em canal de texto de recrutamento." }));
+    return;
+  }
+
+  await interaction.reply({
+    embeds: [eventStyleEmbed(interaction.guild, 0xff3b5c)
+      .setTitle("Canal de recrutamento fechado")
+      .setDescription(`Fechado por ${interaction.user}. Este canal sera deletado em alguns segundos.`)
+      .setFooter({ text: `${config.brandName} | Recrutamento` })],
+  });
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: canal de recrutamento fechado",
+    color: 0xff3b5c,
+    fields: [
+      ["Equipe", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Candidato", normalizeSnowflake(candidateId) ? `<@${candidateId}> (\`${candidateId}\`)` : "Nao informado"],
+      ["Canal", `${interaction.channel.name} (\`${interaction.channel.id}\`)`],
+    ],
+  });
+  setTimeout(() => {
+    interaction.channel.delete(`Recrutamento fechado por ${interaction.user.tag}`).catch(() => {});
+  }, 5000);
+}
+
 function applicationReviewEmbed(interaction, application, answers, roblox, reviewId) {
   const roleId = normalizeSnowflake(application.roleId);
   const embed = baseEmbed(interaction.guild)
+    .setColor(application.kind === "Recrutamento" ? 0x00ff85 : config.color)
     .setAuthor({ name: `${config.brandName} | Analise de aplicacao`, iconURL: config.logoUrl || interaction.guild?.iconURL({ size: 128 }) || undefined })
     .setTitle(`${application.emoji || ""} Nova aplicacao: ${application.kind}`)
     .setDescription([
@@ -2544,13 +2593,16 @@ function applicationReviewEmbed(interaction, application, answers, roblox, revie
       `**Cargo ao aprovar:** ${roleMention(roleId)}`,
       "**Status:** aguardando decisao da equipe",
       "",
-      "Use os botoes abaixo para finalizar a analise.",
+      application.kind === "Recrutamento"
+        ? "Acompanhe o candidato neste canal, converse se precisar e finalize pelos botoes abaixo."
+        : "Use os botoes abaixo para finalizar a analise.",
     ].join("\n"))
     .setThumbnail(roblox?.avatarUrl || interaction.user.displayAvatarURL({ size: 256 }))
     .addFields(
       { name: "Usuario", value: `${interaction.user.tag}\nID: \`${interaction.user.id}\``, inline: true },
       { name: "Tipo", value: application.kind, inline: true },
       { name: "Canal", value: `<#${interaction.channelId}>`, inline: true },
+      { name: "Acoes da equipe", value: application.kind === "Recrutamento" ? "Aprovar, recusar, chamar por DM ou fechar o canal." : "Aprovar, recusar ou chamar por DM.", inline: false },
     )
     .setFooter({ text: `Review ID: ${reviewId} | ${config.brandName}` })
     .setTimestamp();
@@ -3310,37 +3362,33 @@ async function clearMessages(interaction) {
 
 function recruitmentEmbed(guild, bannerUrl = "") {
   const embed = baseEmbed(guild)
-    .setTitle(`${emo(guild, "recruit")} Central de Recrutamento`)
+    .setTitle(`${emo(guild, "recruit")} Recrutamento Oficial`)
     .setDescription([
-      `Bem-vindo a **${config.brandName}**.`,
-      "Escolha uma rota, envie seu formulario e acompanhe a analise com a equipe.",
+      `A **${config.brandName}** esta analisando novos membros e staff.`,
+      "Escolha a opcao abaixo, responda com calma e aguarde a equipe no canal criado para voce.",
       "",
-      `${emo(guild, "spark")} Recrutamento cria um canal individual para cada candidato quando a categoria esta configurada.`,
-      `${emo(guild, "warn")} Nunca envie senha, cookie, token ou dados privados.`,
+      `${emo(guild, "spark")} Cada formulario de membro abre um canal privado de analise.`,
+      `${emo(guild, "logs")} A staff recebe suas respostas em embed com botoes de aprovar, recusar, chamar e fechar.`,
+      `${emo(guild, "warn")} Nunca envie senha, cookie, token, email ou dados privados.`,
     ].join("\n"))
     .addFields(
       {
         name: `${emo(guild, "staff")} Staff`,
-        value: "Moderacao, suporte, tickets e cuidado diario com a comunidade.",
-        inline: true,
-      },
-      {
-        name: `${emo(guild, "captain")} Capitao`,
-        value: "Lideranca, raids, eventos, atividade e postura dentro da crew.",
+        value: "Para quem quer ajudar na moderacao, suporte, tickets e organizacao da comunidade.",
         inline: true,
       },
       {
         name: `${emo(guild, "member")} Membro / Crew`,
-        value: "Entrada organizada com Roblox, bounty/honor, level, fruta e objetivo.",
+        value: "Para entrar na crew com Roblox, bounty/honor, level, fruta e objetivo registrados.",
         inline: true,
       },
       {
-        name: `${emo(guild, "logs")} Analise`,
-        value: "As respostas chegam em embed com botoes de aprovar, recusar e chamar por DM.",
+        name: `${emo(guild, "pin")} Como funciona`,
+        value: "Envie o formulario uma vez, acompanhe pelo canal criado e aguarde a decisao da equipe.",
         inline: false,
       },
     )
-    .setFooter({ text: `${config.brandName} | Formularios organizados, bonitos e privados` });
+    .setFooter({ text: `${config.brandName} | Formularios privados e analisados pela equipe` });
 
   applyEmbedBanner(embed, bannerUrl || config.bannerUrl || config.panelGifUrl);
   return embed;
@@ -3604,7 +3652,7 @@ async function renderStockImage(title, items, nextClock = "") {
   const gap = 40;
   const startX = 270;
   const startY = 145;
-  const brand = config.stockBrandName || "Kitsune Warriors";
+  const brand = config.stockBrandName || "Divine Hunters";
   const rows = Math.ceil(items.length / 4);
   const bgSvg = stockBackgroundSvg(width, height);
   const cardSvg = items.map((item, index) => {
@@ -3831,6 +3879,12 @@ function recruitmentButtons(targetChannelId = "default", guild, roles = {}, cate
   return new ActionRowBuilder().addComponents(
     button(buildApplyCustomId("apply_staff", targetChannelId, roles.staffRoleId || config.staffRoleId), "Staff", ButtonStyle.Primary, "staff", guild),
     button(buildApplyCustomId("apply_recruit", targetChannelId, roles.memberRoleId || config.memberRoleId, categoryId), "Recrutamento", ButtonStyle.Secondary, "recruit", guild),
+  );
+}
+
+function recruitmentChannelControlRow(guild, candidateId) {
+  return new ActionRowBuilder().addComponents(
+    button(`rec_close:${candidateId}`, "Fechar canal", ButtonStyle.Danger, "close", guild),
   );
 }
 
@@ -4767,16 +4821,6 @@ async function upsertStockMessages(channel, store, stock, kinds = ["normal", "mi
 async function upsertStockMessage(channel, store, stock, kind) {
   const payload = await stockMessagePayload(stock, channel.guild, kind);
   store.stockMessageIds ||= {};
-  const messageId = normalizeSnowflake(store.stockMessageIds[kind] || "");
-
-  if (messageId) {
-    const message = await channel.messages.fetch(messageId).catch(() => null);
-    if (message) {
-      await message.edit({ ...payload, attachments: [] });
-      return message;
-    }
-  }
-
   const message = await channel.send(payload);
   store.stockMessageIds[kind] = message.id;
   return message;
