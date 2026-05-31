@@ -934,6 +934,24 @@ client.on(Events.GuildMemberAdd, async (member) => {
   await trackMemberInvite(member);
 });
 
+client.on(Events.GuildCreate, async (guild) => {
+  if (!config.registerCommands) return;
+  await registerSlashCommandsForGuild(guild.id).catch((error) => {
+    console.warn(`[WARN] Nao consegui registrar comandos em ${guild.name}: ${error.message}`);
+  });
+});
+
+client.on(Events.ThreadDelete, (thread) => {
+  if (!thread.guildId) return;
+  clearOpenTicketRecord(thread.guildId, "", thread.id);
+});
+
+client.on(Events.ThreadUpdate, (oldThread, newThread) => {
+  if (!oldThread.archived && newThread.archived && newThread.guildId) {
+    clearOpenTicketRecord(newThread.guildId, "", newThread.id);
+  }
+});
+
 async function handleCommand(interaction) {
   const command = interaction.commandName;
 
@@ -2717,10 +2735,40 @@ async function setupTicketCenter(interaction) {
   const adminRole = interaction.options.getRole("cargo_admin", false);
   const logChannel = interaction.options.getChannel("canal_logs", false);
 
+  if (!(await ensureTicketParent(interaction, leaveChannel))) return;
+  if (supportChannel.id !== leaveChannel.id && !(await ensureTicketParent(interaction, supportChannel))) return;
+  if (logChannel && !(await ensurePanelTarget(interaction, logChannel))) return;
+
   await interaction.reply({
     embeds: [ticketCenterEmbed(interaction.guild, { leaveChannel, supportChannel, supportRole, adminRole, logChannel })],
     components: [ticketCenterButtons(interaction.guild, { leaveChannel, supportChannel, supportRole, adminRole, logChannel })],
   });
+}
+
+async function ensureTicketParent(interaction, channel) {
+  if (!channel || channel.type !== ChannelType.GuildText) {
+    await interaction.reply(hidden({ content: "Escolha um canal de texto valido para abrir os topicos de ticket." }));
+    return false;
+  }
+
+  const botMember = await interaction.guild.members.fetchMe().catch(() => null);
+  const permissions = botMember ? channel.permissionsFor(botMember) : null;
+  const needed = [
+    [PermissionFlagsBits.ViewChannel, "Ver canal"],
+    [PermissionFlagsBits.SendMessages, "Enviar mensagens"],
+    [PermissionFlagsBits.SendMessagesInThreads, "Enviar em topicos"],
+    [PermissionFlagsBits.CreatePrivateThreads, "Criar topicos privados"],
+    [PermissionFlagsBits.ManageThreads, "Gerenciar topicos"],
+  ];
+  const missing = needed.filter(([bit]) => !permissions?.has(bit)).map(([, label]) => label);
+
+  if (missing.length) {
+    await interaction.reply(hidden({
+      content: `Faltam permissoes para ticket em ${channel}: ${missing.join(", ")}.`,
+    }));
+    return false;
+  }
+  return true;
 }
 
 function ticketCenterEmbed(guild, setup) {
@@ -2860,6 +2908,16 @@ async function createAdvancedTicketThread(interaction, parsed, form) {
     return;
   }
 
+  const store = guildData(interaction.guildId);
+  const ticketKey = ticketOpenKey(interaction.user.id, parsed.type);
+  const oldThreadId = store.tickets.openByUser[ticketKey];
+  const oldThread = oldThreadId ? await parent.threads.fetch(oldThreadId).catch(() => null) : null;
+  if (oldThread && !oldThread.archived) {
+    await interaction.editReply(`Voce ja tem um ticket desse tipo aberto: ${oldThread}.`);
+    return;
+  }
+  delete store.tickets.openByUser[ticketKey];
+
   const botMember = await interaction.guild.members.fetchMe();
   const permissions = parent.permissionsFor(botMember);
   const needed = [
@@ -2885,9 +2943,11 @@ async function createAdvancedTicketThread(interaction, parsed, form) {
   });
 
   await addTicketMembers(thread, interaction, parsed);
+  store.tickets.openByUser[ticketKey] = thread.id;
+  scheduleDataSave();
 
   await thread.send({
-    content: `${interaction.user} <@&${parsed.supportRoleId}>`,
+    content: [String(interaction.user), parsed.supportRoleId !== "0" ? `<@&${parsed.supportRoleId}>` : ""].filter(Boolean).join(" "),
     embeds: [ticketInitialEmbed(interaction.guild, interaction.user, parsed, form)],
     components: ticketComponents(interaction.guild, interaction.user.id, parsed),
     allowedMentions: { users: [interaction.user.id], roles: parsed.supportRoleId !== "0" ? [parsed.supportRoleId] : [] },
@@ -3104,9 +3164,20 @@ async function closeTicket(interaction) {
     }).catch(() => {});
   }
 
+  clearOpenTicketRecord(interaction.guildId, ticket.openerId, interaction.channel.id);
   await interaction.editReply(`Ticket fechado. ${logChannel ? "Transcript enviado nas logs." : "Sem canal de logs configurado."}`);
   await interaction.channel.setLocked(true).catch(() => {});
   await interaction.channel.setArchived(true, "Ticket fechado").catch(() => {});
+}
+
+function clearOpenTicketRecord(guildId, openerId, threadId) {
+  const store = guildData(guildId);
+  for (const [key, value] of Object.entries(store.tickets.openByUser || {})) {
+    if (value === threadId || key.startsWith(`${openerId}:`)) {
+      delete store.tickets.openByUser[key];
+    }
+  }
+  scheduleDataSave();
 }
 
 async function buildTranscript(thread) {
@@ -3196,6 +3267,10 @@ function ticketTypeColor(type) {
   if (type === "report") return 0xffc857;
   if (type === "partner") return 0x00ff85;
   return 0x7b2cff;
+}
+
+function ticketOpenKey(userId, type) {
+  return `${userId}:${type}`;
 }
 
 function normalizeChannelName(value) {
@@ -3901,14 +3976,31 @@ async function registerSlashCommands() {
     return;
   }
 
-  const rest = new REST({ version: "10" }).setToken(config.token);
-  if (config.guildId) {
-    await rest.put(Routes.applicationGuildCommands(config.clientId, config.guildId), { body: commands });
-    console.log("[OK] Comandos registrados no servidor.");
-  } else {
-    await rest.put(Routes.applicationCommands(config.clientId), { body: commands });
-    console.log("[OK] Comandos globais registrados. Podem demorar para aparecer.");
+  const configuredGuilds = parseIdList(config.guildId);
+  const cachedGuilds = [...client.guilds.cache.keys()];
+  const guildIds = [...new Set([...configuredGuilds, ...cachedGuilds])];
+
+  if (!guildIds.length) {
+    console.warn("[WARN] Bot ainda nao esta em nenhum servidor no cache para registrar comandos.");
+    return;
   }
+
+  let registered = 0;
+  for (const guildId of guildIds) {
+    await registerSlashCommandsForGuild(guildId)
+      .then(() => { registered += 1; })
+      .catch((error) => {
+        console.warn(`[WARN] Falha ao registrar comandos no servidor ${guildId}: ${error.message}`);
+      });
+  }
+  console.log(`[OK] Comandos registrados em ${registered}/${guildIds.length} servidor(es).`);
+}
+
+async function registerSlashCommandsForGuild(guildId) {
+  if (!config.clientId || !normalizeSnowflake(guildId)) return;
+  const rest = new REST({ version: "10" }).setToken(config.token);
+  await rest.put(Routes.applicationGuildCommands(config.clientId, guildId), { body: commands });
+  console.log(`[OK] Comandos registrados no servidor ${guildId}.`);
 }
 
 function createEmptyData() {
@@ -3966,6 +4058,8 @@ function guildData(guildId) {
   store.auditLogChannelId ||= "";
   store.suggestionChannelId ||= "";
   store.warns ||= {};
+  store.tickets ||= {};
+  store.tickets.openByUser ||= {};
   return store;
 }
 
@@ -5344,6 +5438,13 @@ function parseUrlList(raw) {
   return String(raw || "")
     .split(",")
     .map((url) => url.trim())
+    .filter(Boolean);
+}
+
+function parseIdList(raw) {
+  return String(raw || "")
+    .split(",")
+    .map((value) => normalizeSnowflake(value))
     .filter(Boolean);
 }
 
