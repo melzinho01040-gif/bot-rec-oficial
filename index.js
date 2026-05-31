@@ -3760,7 +3760,6 @@ function apiStatusEmbed(status, guild) {
 function recruitmentButtons(targetChannelId = "default", guild, roles = {}, categoryId = "") {
   return new ActionRowBuilder().addComponents(
     button(buildApplyCustomId("apply_staff", targetChannelId, roles.staffRoleId || config.staffRoleId), "Staff", ButtonStyle.Primary, "staff", guild),
-    button(buildApplyCustomId("apply_captain", targetChannelId, roles.captainRoleId || config.captainRoleId), "Capitao", ButtonStyle.Success, "pirate", guild),
     button(buildApplyCustomId("apply_recruit", targetChannelId, roles.memberRoleId || config.memberRoleId, categoryId), "Recrutamento", ButtonStyle.Secondary, "recruit", guild),
   );
 }
