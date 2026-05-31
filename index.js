@@ -2734,31 +2734,26 @@ function ticketCenterEmbed(guild, setup) {
     .addFields(
       {
         name: `${emo(guild, "leave")} Quero sair da crew`,
-        value: `Abre em ${setup.leaveChannel}.`,
+        value: "Atendimento privado com a equipe.",
         inline: true,
       },
       {
         name: `${emo(guild, "support")} Suporte tecnico`,
-        value: `Abre em ${setup.supportChannel}.`,
+        value: "Ajuda com erros, duvidas e problemas.",
         inline: true,
       },
       {
         name: `${emo(guild, "warn")} Denuncia`,
-        value: `Abre em ${setup.supportChannel}.`,
+        value: "Envie provas e detalhes com seguranca.",
         inline: true,
       },
       {
         name: `${emo(guild, "spark")} Parceria/Outros`,
-        value: `Abre em ${setup.supportChannel}.`,
+        value: "Propostas, assuntos gerais e contato.",
         inline: true,
       },
-      {
-        name: `${emo(guild, "staff")} Equipe`,
-        value: [setup.supportRole, setup.adminRole].filter(Boolean).join(" | "),
-        inline: false,
-      },
     )
-    .setFooter({ text: setup.logChannel ? `Logs em #${setup.logChannel.name}` : "Sem canal de logs configurado" });
+    .setFooter({ text: `${config.brandName} | Atendimento privado` });
 }
 
 function ticketCenterButtons(guild, setup) {
