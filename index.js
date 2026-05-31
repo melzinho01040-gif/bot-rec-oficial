@@ -104,6 +104,7 @@ let fruityBloxActionCache = { id: "", expiresAt: 0 };
 const FRUITYBLOX_STOCK_URL = "https://fruityblox.com/stock";
 const FRUITYBLOX_ACTION_ID_FALLBACK = "00f5faf6ef807fd99ad4baa377a0a84ba899093aba";
 const FRUITYBLOX_ROUTER_STATE_TREE = "%5B%22%22%2C%7B%22children%22%3A%5B%22stock%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%2Cnull%2Cnull%5D%7D%2Cnull%2Cnull%5D%7D%2Cnull%2Cnull%2Ctrue%5D";
+const BLOXFRUITSVALUES_URL = "https://bloxfruitsvalues.com/values/fruits?sortBy=value_high_low";
 
 const EXTRA_COMMANDS = new Set([
   "addcrewaccount",
@@ -2235,23 +2236,48 @@ async function forceUpdateFruitStock(interaction) {
 }
 
 async function showFruitValue(interaction) {
+  await interaction.deferReply();
   const fruit = interaction.options.getString("fruta", true);
   const found = findFruitMeta(fruit);
   if (!found) {
-    await interaction.reply(hidden({ content: `Nao achei a fruta \`${fruit}\` no catalogo.` }));
+    await interaction.editReply(`Nao achei a fruta \`${fruit}\` no catalogo.`);
     return;
   }
 
+  const trade = await fetchBloxFruitsValue(found.name).catch(() => null);
   const embed = baseEmbed(interaction.guild)
     .setTitle(`${emo(interaction.guild, "money")} ${found.name}`)
+    .setURL(BLOXFRUITSVALUES_URL)
     .addFields(
       { name: "Beli", value: found.meta.beli || "Nao informado", inline: true },
       { name: "Robux", value: found.meta.robux || "Nao informado", inline: true },
       { name: "Tipo", value: found.meta.type || "Nao informado", inline: true },
+      { name: "Trading Value", value: trade?.value || "Confira na fonte", inline: true },
+      { name: "Demand", value: trade?.demand || "Fonte ao vivo", inline: true },
+      { name: "Fonte", value: `[BloxFruitsValues](${BLOXFRUITSVALUES_URL})`, inline: false },
     );
 
   if (found.meta.imageUrl) embed.setThumbnail(found.meta.imageUrl);
-  await interaction.reply({ embeds: [embed] });
+  await interaction.editReply({ embeds: [embed] });
+}
+
+async function fetchBloxFruitsValue(name) {
+  const html = await fetchText(BLOXFRUITSVALUES_URL, {
+    headers: { "User-Agent": "DivineHuntersDiscordBot/1.0" },
+    timeoutMs: 10000,
+  });
+  const key = normalizeFruitName(name);
+  const compact = String(html || "").replace(/\s+/g, " ");
+  const namePattern = new RegExp(`"${escapeRegExp(name)}"[^{}]{0,500}`, "i");
+  const textPattern = new RegExp(`${escapeRegExp(name)}[^\\d]{0,120}([\\d,]{4,})[^A-Za-z0-9]{0,80}(Low|Medium|High|Very High|Extreme)?`, "i");
+  const slice = compact.match(namePattern)?.[0] || compact.match(textPattern)?.[0] || "";
+  const valueMatch = slice.match(/([\d,]{4,})/);
+  const demandMatch = slice.match(/\b(Low|Medium|High|Very High|Extreme)\b/i);
+  if (!valueMatch && !slice.toLowerCase().includes(key)) return null;
+  return {
+    value: valueMatch ? valueMatch[1] : "",
+    demand: demandMatch ? demandMatch[1] : "",
+  };
 }
 
 async function handleComboCommand(interaction) {
@@ -4482,6 +4508,10 @@ function guildData(guildId) {
 
 function normalizeKey(value) {
   return stripAccents(String(value || "")).trim().toLowerCase();
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function registerCrewMember(guildId, user, roblox, addedBy) {
