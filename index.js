@@ -41,7 +41,7 @@ const config = {
   clientId: process.env.CLIENT_ID,
   guildId: process.env.GUILD_ID,
   registerCommands: String(process.env.REGISTER_COMMANDS || "false").toLowerCase() === "true",
-  brandName: process.env.BRAND_NAME || "Divine Hunters",
+  brandName: process.env.BRAND_NAME || "Kitsune Warriors",
   color: parseColor(process.env.BRAND_COLOR || process.env.EMBED_COLOR || process.env.COLOR || "7b2cff"),
   bannerUrl: process.env.BANNER_URL || "",
   logoUrl: process.env.LOGO_URL || "",
@@ -53,7 +53,7 @@ const config = {
   recruitmentCategoryId: process.env.RECRUITMENT_CATEGORY_ID || process.env.APPLICATION_CATEGORY_ID || "",
   stockChannelId: process.env.STOCK_CHANNEL_ID || "",
   stockShowSource: String(process.env.STOCK_SHOW_SOURCE || "false").toLowerCase() === "true",
-  stockBrandName: process.env.STOCK_BRAND_NAME || "Divine Hunters",
+  stockBrandName: process.env.STOCK_BRAND_NAME || "Kitsune Warriors",
   stockLogoUrl: process.env.STOCK_LOGO_URL || "",
   boostChannelId: process.env.BOOST_CHANNEL_ID || "",
   ticketCategoryId: process.env.TICKET_CATEGORY_ID || "",
@@ -3534,7 +3534,7 @@ async function renderStockImage(title, items, nextClock = "") {
   const gap = 40;
   const startX = 270;
   const startY = 145;
-  const brand = config.stockBrandName || "Divine Hunters";
+  const brand = config.stockBrandName || "Kitsune Warriors";
   const rows = Math.ceil(items.length / 4);
   const bgSvg = stockBackgroundSvg(width, height);
   const cardSvg = items.map((item, index) => {
