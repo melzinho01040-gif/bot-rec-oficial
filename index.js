@@ -74,6 +74,7 @@ const config = {
   services: parseServices(process.env.SERVICES_JSON),
   emoji: parseEmojiConfig(process.env.EMOJI_JSON),
   activities: parseActivityList(process.env.BOT_ACTIVITIES),
+  badWords: parseBadWords(process.env.AUTOMOD_BAD_WORDS),
 };
 
 const client = new Client({
@@ -99,6 +100,7 @@ const data = loadData();
 const xpCooldowns = new Map();
 const inviteCache = new Map();
 const spamBuckets = new Map();
+const automodMuteCooldowns = new Map();
 let dataSaveTimer = null;
 let fruityBloxActionCache = { id: "", expiresAt: 0 };
 
@@ -516,6 +518,17 @@ const commands = [
         .addChannelOption((option) => option.setName("canal").setDescription("Canal").addChannelTypes(ChannelType.GuildText).setRequired(true))
         .addStringOption((option) => option.setName("mensagem").setDescription("Mensagem opcional").setMaxLength(1000).setRequired(false))
         .addStringOption((option) => option.setName("imagem_url").setDescription("Imagem opcional").setRequired(false)),
+    ),
+  new SlashCommandBuilder()
+    .setName("verificacao")
+    .setDescription("Sistema de verificacao para liberar o servidor.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand.setName("setup").setDescription("Envia painel de verificacao.")
+        .addChannelOption((option) => option.setName("canal").setDescription("Canal do painel").addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addRoleOption((option) => option.setName("cargo").setDescription("Cargo liberado apos verificar").setRequired(true))
+        .addStringOption((option) => option.setName("link").setDescription("Link de regras/site para abrir antes de verificar").setRequired(false))
+        .addStringOption((option) => option.setName("imagem_url").setDescription("Imagem opcional do painel").setRequired(false)),
     ),
   new SlashCommandBuilder()
     .setName("strike")
@@ -1232,6 +1245,11 @@ async function handleCommand(interaction) {
     return;
   }
 
+  if (command === "verificacao") {
+    await handleVerificationCommand(interaction);
+    return;
+  }
+
   if (command === "strike") {
     await handleStrikeCommand(interaction);
     return;
@@ -1933,6 +1951,71 @@ async function handleWelcomeCommand(interaction) {
   store.welcome.imageUrl = safeImageUrl(interaction.options.getString("imagem_url", false)) || "";
   scheduleDataSave();
   await interaction.reply(hidden({ content: `Boas-vindas configuradas em ${channel}.` }));
+}
+
+async function handleVerificationCommand(interaction) {
+  const channel = interaction.options.getChannel("canal", true);
+  const role = interaction.options.getRole("cargo", true);
+  const link = safeHttpUrl(interaction.options.getString("link", false)) || "";
+  const imageUrl = safeImageUrl(interaction.options.getString("imagem_url", false)) || "";
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+  const botMember = await interaction.guild.members.fetchMe().catch(() => null);
+  if (!botMember?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
+    await interaction.reply(hidden({ content: "Eu preciso da permissao Gerenciar cargos para liberar membros." }));
+    return;
+  }
+  if (role.managed || botMember.roles.highest.comparePositionTo(role) <= 0) {
+    await interaction.reply(hidden({ content: "Meu cargo precisa ficar acima do cargo de verificacao na lista de cargos." }));
+    return;
+  }
+
+  const store = guildData(interaction.guildId);
+  store.verification.roleId = role.id;
+  store.verification.channelId = channel.id;
+  store.verification.link = link;
+  store.verification.imageUrl = imageUrl;
+  scheduleDataSave();
+
+  await channel.send({
+    embeds: [verificationEmbed(interaction.guild, role, link, imageUrl)],
+    components: [verificationButtons(interaction.guild, role.id, link)],
+  });
+  await interaction.reply(hidden({ content: `Painel de verificacao enviado em ${channel}. Cargo liberado: ${role}.` }));
+}
+
+async function verifyMember(interaction) {
+  const [, roleId] = String(interaction.customId).split(":");
+  const store = guildData(interaction.guildId);
+  const targetRoleId = normalizeSnowflake(roleId) || store.verification.roleId;
+  const role = targetRoleId ? interaction.guild.roles.cache.get(targetRoleId) : null;
+  if (!role) {
+    await interaction.reply(hidden({ content: "Cargo de verificacao nao encontrado. Peça para um admin recriar o painel." }));
+    return;
+  }
+  const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+  if (!member) {
+    await interaction.reply(hidden({ content: "Nao consegui localizar seu perfil no servidor." }));
+    return;
+  }
+  if (member.roles.cache.has(role.id)) {
+    await interaction.reply(hidden({ content: "Voce ja esta verificado e liberado no servidor." }));
+    return;
+  }
+  const botMember = await interaction.guild.members.fetchMe().catch(() => null);
+  if (!botMember?.permissions?.has(PermissionFlagsBits.ManageRoles) || role.managed || botMember.roles.highest.comparePositionTo(role) <= 0) {
+    await interaction.reply(hidden({ content: "Nao consigo entregar esse cargo. A equipe precisa ajustar minhas permissoes/cargos." }));
+    return;
+  }
+  await member.roles.add(role, `Verificacao concluida por ${interaction.user.tag}`);
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: membro verificado",
+    color: 0x00ff85,
+    fields: [
+      ["Membro", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Cargo liberado", `${role} (\`${role.id}\`)`],
+    ],
+  });
+  await interaction.reply(hidden({ content: `Verificacao concluida. Voce recebeu ${role} e o servidor foi liberado.` }));
 }
 
 async function handleStrikeCommand(interaction) {
@@ -2805,6 +2888,11 @@ async function showInvites(interaction) {
 
 async function handleButton(interaction) {
   const id = interaction.customId;
+
+  if (id.startsWith("verify:")) {
+    await verifyMember(interaction);
+    return;
+  }
 
   if (id.startsWith("apply_staff")) {
     await interaction.showModal(staffModal(getCustomIdTarget(id), getCustomIdRole(id)));
@@ -4727,6 +4815,38 @@ function servicesButtons(guild) {
   );
 }
 
+function verificationEmbed(guild, role, link, imageUrl) {
+  const embed = baseEmbed(guild)
+    .setTitle("Verificacao do servidor")
+    .setDescription([
+      "Para liberar o restante do servidor, leia as regras e conclua a verificacao.",
+      "",
+      link ? "1. Abra o link abaixo e confira as informacoes." : "1. Confira as regras do servidor.",
+      "2. Clique em **Verificar**.",
+      "3. O cargo de acesso sera entregue automaticamente.",
+    ].join("\n"))
+    .addFields(
+      { name: "Cargo liberado", value: `${role}`, inline: true },
+      { name: "Seguranca", value: "Contas suspeitas ou comportamento toxico ainda podem ser punidos pela equipe.", inline: false },
+    )
+    .setColor(0x00ff85);
+  if (imageUrl) embed.setImage(imageUrl);
+  return embed;
+}
+
+function verificationButtons(guild, roleId, link = "") {
+  const row = new ActionRowBuilder();
+  if (link) {
+    row.addComponents(new ButtonBuilder()
+      .setLabel("Abrir link")
+      .setStyle(ButtonStyle.Link)
+      .setURL(link)
+      .setEmoji(emojiValue(guild, "pin") || undefined));
+  }
+  row.addComponents(button(`verify:${roleId}`, "Verificar", ButtonStyle.Success, "approve", guild));
+  return row;
+}
+
 function stockButtons(guild) {
   return new ActionRowBuilder().addComponents(
     button("stock_refresh", "Atualizar stock", ButtonStyle.Primary, "refresh", guild),
@@ -4857,6 +4977,17 @@ function safeImageUrl(value) {
   }
 }
 
+function safeHttpUrl(value) {
+  const text = String(value || "").trim();
+  if (!text || text.length > 2048) return "";
+  try {
+    const url = new URL(text);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
 async function registerSlashCommands() {
   if (!config.clientId) {
     console.warn("[WARN] CLIENT_ID nao configurado. Comandos nao registrados.");
@@ -4947,6 +5078,7 @@ function guildData(guildId) {
   store.warns ||= {};
   store.strikes ||= {};
   store.welcome ||= {};
+  store.verification ||= {};
   store.goals ||= {};
   store.presences ||= {};
   store.shifts ||= {};
@@ -5072,6 +5204,7 @@ async function guardMessage(message) {
   if (member?.permissions?.has(PermissionFlagsBits.ManageMessages)) return;
 
   const content = message.content;
+  const badWord = findBadWord(content);
   const hasInvite = /(discord\.gg|discord\.com\/invite|discordapp\.com\/invite)/i.test(content);
   const hasBadLink = /https?:\/\/\S+/i.test(content) && !/roblox\.com|youtube\.com|youtu\.be|discord\.com/i.test(content);
   const now = Date.now();
@@ -5079,6 +5212,11 @@ async function guardMessage(message) {
   const bucket = (spamBuckets.get(key) || []).filter((time) => now - time < 7000);
   bucket.push(now);
   spamBuckets.set(key, bucket);
+
+  if (badWord) {
+    await punishBadWord(message, badWord);
+    return;
+  }
 
   if (hasInvite || hasBadLink || bucket.length >= 6) {
     await message.delete().catch(() => {});
@@ -5093,6 +5231,49 @@ async function guardMessage(message) {
       ],
     });
   }
+}
+
+async function punishBadWord(message, badWord) {
+  const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
+  const botMember = await message.guild.members.fetchMe().catch(() => null);
+  const key = `${message.guildId}:${message.author.id}`;
+  const now = Date.now();
+  if ((automodMuteCooldowns.get(key) || 0) > now) {
+    await message.delete().catch(() => {});
+    return;
+  }
+  automodMuteCooldowns.set(key, now + 60 * 1000);
+  await message.delete().catch(() => {});
+  const canTimeout = member?.moderatable && botMember?.permissions?.has(PermissionFlagsBits.ModerateMembers);
+  if (canTimeout) {
+    await member.timeout(60 * 1000, `AutoMod: palavra bloqueada (${badWord})`).catch(() => {});
+  }
+  await sendAuditLog(message.guild, {
+    title: "Auditoria: automod mute",
+    color: 0xff3b5c,
+    fields: [
+      ["Usuario", `${message.author} (\`${message.author.id}\`)`],
+      ["Canal", `${message.channel}`],
+      ["Punicao", canTimeout ? "Timeout de 1 minuto" : "Mensagem apagada; sem permissao para timeout"],
+      ["Motivo", "Palavra ofensiva bloqueada"],
+      ["Conteudo", safeField(message.content)],
+    ],
+  });
+}
+
+function findBadWord(content) {
+  const normalized = stripAccents(String(content || "").toLowerCase())
+    .replace(/[@#$%¨&*()_+=|\\{}\[\]:;"'<>,.?/~-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return "";
+  for (const word of config.badWords) {
+    const clean = stripAccents(String(word || "").toLowerCase()).trim();
+    if (!clean) continue;
+    const pattern = new RegExp(`(^|\\s)${escapeRegExp(clean).replace(/\\ /g, "\\s+")}(\\s|$)`, "i");
+    if (pattern.test(normalized)) return clean;
+  }
+  return "";
 }
 
 function trackMessageXp(message) {
@@ -6435,6 +6616,25 @@ function parseActivityList(raw) {
     .map((item) => item.trim())
     .filter(Boolean)
     .slice(0, 8);
+}
+
+function parseBadWords(raw) {
+  const defaults = [
+    "fdp",
+    "porra",
+    "caralho",
+    "merda",
+    "vai se fuder",
+    "arrombado",
+    "desgracado",
+    "desgraçado",
+    "lixo",
+  ];
+  const custom = String(raw || "")
+    .split(/[|,;]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return [...new Set([...(custom.length ? custom : defaults)].map((item) => item.toLowerCase()))].slice(0, 80);
 }
 
 function parseEmojiConfig(raw) {
