@@ -498,6 +498,50 @@ const commands = [
         .addChannelOption((option) => option.setName("canal").setDescription("Canal").addChannelTypes(ChannelType.GuildText).setRequired(false)),
     ),
   new SlashCommandBuilder()
+    .setName("perfil")
+    .setDescription("Mostra ficha completa de um membro.")
+    .addUserOption((option) => option.setName("membro").setDescription("Membro").setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("relatorio")
+    .setDescription("Relatorios administrativos da crew.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) => subcommand.setName("semanal").setDescription("Mostra resumo semanal da crew.")),
+  new SlashCommandBuilder()
+    .setName("boasvindas")
+    .setDescription("Configura boas-vindas em embed.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand.setName("setup").setDescription("Define canal de boas-vindas.")
+        .addChannelOption((option) => option.setName("canal").setDescription("Canal").addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addStringOption((option) => option.setName("mensagem").setDescription("Mensagem opcional").setMaxLength(1000).setRequired(false))
+        .addStringOption((option) => option.setName("imagem_url").setDescription("Imagem opcional").setRequired(false)),
+    ),
+  new SlashCommandBuilder()
+    .setName("strike")
+    .setDescription("Sistema de strikes da crew.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+    .addSubcommand((subcommand) =>
+      subcommand.setName("add").setDescription("Aplica strike.")
+        .addUserOption((option) => option.setName("membro").setDescription("Membro").setRequired(true))
+        .addStringOption((option) => option.setName("motivo").setDescription("Motivo").setMaxLength(900).setRequired(true)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("listar").setDescription("Lista strikes.")
+        .addUserOption((option) => option.setName("membro").setDescription("Membro").setRequired(true)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("limpar").setDescription("Limpa strikes.")
+        .addUserOption((option) => option.setName("membro").setDescription("Membro").setRequired(true)),
+    ),
+  new SlashCommandBuilder()
+    .setName("crewstatus")
+    .setDescription("Painel de status da crew.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand.setName("enviar").setDescription("Envia painel de status.")
+        .addChannelOption((option) => option.setName("canal").setDescription("Canal").addChannelTypes(ChannelType.GuildText).setRequired(false)),
+    ),
+  new SlashCommandBuilder()
     .setName("setup-staff")
     .setDescription("Envia o painel de aplicacao para staff.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -713,6 +757,13 @@ const commands = [
     )
     .addUserOption((option) =>
       option.setName("usuario").setDescription("Apagar so mensagens deste usuario").setRequired(false),
+    ),
+  new SlashCommandBuilder()
+    .setName("nuke")
+    .setDescription("Apaga todas as mensagens do canal recriando ele.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
+    .addStringOption((option) =>
+      option.setName("motivo").setDescription("Motivo").setMaxLength(300).setRequired(false),
     ),
   new SlashCommandBuilder()
     .setName("precos")
@@ -1037,6 +1088,7 @@ client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
 
 client.on(Events.GuildMemberAdd, async (member) => {
   await trackMemberInvite(member);
+  await sendWelcomeMessage(member);
 });
 
 client.on(Events.GuildCreate, async (guild) => {
@@ -1159,6 +1211,31 @@ async function handleCommand(interaction) {
     return;
   }
 
+  if (command === "perfil") {
+    await handleProfileCommand(interaction);
+    return;
+  }
+
+  if (command === "relatorio") {
+    await handleReportCommand(interaction);
+    return;
+  }
+
+  if (command === "boasvindas") {
+    await handleWelcomeCommand(interaction);
+    return;
+  }
+
+  if (command === "strike") {
+    await handleStrikeCommand(interaction);
+    return;
+  }
+
+  if (command === "crewstatus") {
+    await handleCrewStatusCommand(interaction);
+    return;
+  }
+
   if (command === "setup-staff" || command === "embed-staff") {
     const targetChannelId = getApplicationTargetFromCommand(interaction);
     if (!(await ensureApplicationTarget(interaction, targetChannelId))) return;
@@ -1270,6 +1347,11 @@ async function handleCommand(interaction) {
 
   if (command === "limpar") {
     await clearMessages(interaction);
+    return;
+  }
+
+  if (command === "nuke") {
+    await nukeChannel(interaction);
     return;
   }
 
@@ -1806,6 +1888,159 @@ async function handlePollCommand(interaction) {
     )],
   });
   await interaction.reply(hidden({ content: `Votacao enviada em ${channel}.` }));
+}
+
+async function handleProfileCommand(interaction) {
+  const user = interaction.options.getUser("membro") || interaction.user;
+  const store = guildData(interaction.guildId);
+  const memberRecord = store.members[user.id];
+  const pvp = store.pvp.players[user.id] || { wins: 0, losses: 0, streak: 0 };
+  const warns = store.warns[user.id] || [];
+  const strikes = store.strikes[user.id] || [];
+  const presenceCount = Object.values(store.presences).filter((presence) => presence.members?.[user.id]).length;
+  const blacklist = findBlacklistHit(interaction.guildId, [user.id, user.tag, memberRecord?.roblox].filter(Boolean));
+  const embed = baseEmbed(interaction.guild)
+    .setTitle(`Ficha de ${user.username}`)
+    .setThumbnail(user.displayAvatarURL({ size: 256 }))
+    .addFields(
+      { name: "Crew", value: memberRecord ? `Roblox: **${memberRecord.roblox || "N/A"}**` : "Nao registrado na base da crew.", inline: false },
+      { name: "PVP", value: `${pvp.wins || 0}W/${pvp.losses || 0}L | streak ${pvp.streak || 0}`, inline: true },
+      { name: "Presencas", value: String(presenceCount), inline: true },
+      { name: "Warns", value: String(warns.length), inline: true },
+      { name: "Strikes", value: String(strikes.length), inline: true },
+      { name: "Blacklist", value: blacklist ? `Sim: ${safeField(blacklist.reason)}` : "Nao", inline: true },
+    );
+  await interaction.reply({ embeds: [embed] });
+}
+
+async function handleReportCommand(interaction) {
+  const store = guildData(interaction.guildId);
+  await interaction.reply({ embeds: [weeklyReportEmbed(interaction.guild, store)] });
+}
+
+async function handleWelcomeCommand(interaction) {
+  const channel = interaction.options.getChannel("canal", true);
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+  const store = guildData(interaction.guildId);
+  store.welcome.channelId = channel.id;
+  store.welcome.message = interaction.options.getString("mensagem") || "";
+  store.welcome.imageUrl = safeImageUrl(interaction.options.getString("imagem_url", false)) || "";
+  scheduleDataSave();
+  await interaction.reply(hidden({ content: `Boas-vindas configuradas em ${channel}.` }));
+}
+
+async function handleStrikeCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  const user = interaction.options.getUser("membro", true);
+  const store = guildData(interaction.guildId);
+  store.strikes[user.id] ||= [];
+  if (sub === "add") {
+    const reason = interaction.options.getString("motivo", true);
+    store.strikes[user.id].push({ reason, moderatorId: interaction.user.id, createdAt: Date.now() });
+    scheduleDataSave();
+    const total = store.strikes[user.id].length;
+    await sendAuditLog(interaction.guild, {
+      title: total >= 3 ? "Auditoria: membro atingiu 3 strikes" : "Auditoria: strike aplicado",
+      color: total >= 3 ? 0xff3b5c : 0xffc857,
+      fields: [
+        ["Moderador", `${interaction.user} (\`${interaction.user.id}\`)`],
+        ["Membro", `${user} (\`${user.id}\`)`],
+        ["Total", String(total)],
+        ["Motivo", reason],
+      ],
+    });
+    await interaction.reply(hidden({ content: `${user} recebeu strike. Total: **${total}**.` }));
+    return;
+  }
+  if (sub === "limpar") {
+    const total = store.strikes[user.id].length;
+    store.strikes[user.id] = [];
+    scheduleDataSave();
+    await interaction.reply(hidden({ content: `Strikes de ${user} limpos. Removidos: **${total}**.` }));
+    return;
+  }
+  const lines = store.strikes[user.id].map((strike, index) => `**${index + 1}.** ${safeField(strike.reason)} - <@${strike.moderatorId}>`).slice(-10);
+  await interaction.reply(hidden({ embeds: [baseEmbed(interaction.guild).setTitle(`Strikes de ${user.username}`).setDescription(lines.length ? lines.join("\n") : "Sem strikes.")] }));
+}
+
+async function handleCrewStatusCommand(interaction) {
+  const channel = interaction.options.getChannel("canal", false) || interaction.channel;
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+  await channel.send({ embeds: [crewStatusEmbed(interaction.guild, guildData(interaction.guildId))] });
+  await interaction.reply(hidden({ content: `Painel de status enviado em ${channel}.` }));
+}
+
+async function sendWelcomeMessage(member) {
+  const store = guildData(member.guild.id);
+  const channel = await resolveChannel(member.guild, store.welcome.channelId);
+  if (!channel?.isTextBased?.()) return;
+  const message = (store.welcome.message || "Bem-vindo(a), {user}! Leia as regras, conheca a crew e abra o recrutamento quando estiver pronto.")
+    .replace(/\{user\}/gi, `${member}`)
+    .replace(/\{server\}/gi, member.guild.name);
+  const embed = baseEmbed(member.guild)
+    .setTitle(`Bem-vindo a ${config.brandName}`)
+    .setDescription(message)
+    .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
+    .addFields(
+      { name: "Membro", value: `${member}`, inline: true },
+      { name: "Conta criada", value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
+      { name: "Entrada", value: `<t:${Math.floor(Date.now() / 1000)}:f>`, inline: true },
+    )
+    .setTimestamp();
+  if (store.welcome.imageUrl) embed.setImage(store.welcome.imageUrl);
+  await channel.send({ content: `${member}`, embeds: [embed], allowedMentions: { users: [member.id] } }).catch(() => {});
+}
+
+function weeklyReportEmbed(guild, store) {
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const presences = Object.values(store.presences || {}).filter((item) => (item.createdAt || 0) >= since);
+  const pvpMatches = (store.pvp.history || []).filter((item) => (item.createdAt || 0) >= since);
+  const warns = Object.values(store.warns || {}).flat().filter((item) => (item.createdAt || 0) >= since);
+  const strikes = Object.values(store.strikes || {}).flat().filter((item) => (item.createdAt || 0) >= since);
+  const openTickets = Object.keys(store.tickets.openByUser || {}).length;
+  const goals = Object.values(store.goals || {}).filter((goal) => !goal.done);
+  const topPvp = Object.entries(store.pvp.players || {})
+    .sort(([, a], [, b]) => ((b.wins || 0) - (b.losses || 0)) - ((a.wins || 0) - (a.losses || 0)))
+    .slice(0, 5)
+    .map(([id, stats], index) => `${index + 1}. <@${id}> - ${stats.wins || 0}W/${stats.losses || 0}L`)
+    .join("\n") || "Sem partidas registradas.";
+
+  return baseEmbed(guild)
+    .setTitle("Relatorio semanal da crew")
+    .setDescription(`Resumo dos ultimos 7 dias em **${config.brandName}**.`)
+    .addFields(
+      { name: "Eventos e presencas", value: `Presencas criadas: **${presences.length}**\nDuelos PVP: **${pvpMatches.length}**`, inline: true },
+      { name: "Moderacao", value: `Warns: **${warns.length}**\nStrikes: **${strikes.length}**`, inline: true },
+      { name: "Operacao", value: `Tickets abertos: **${openTickets}**\nMetas ativas: **${goals.length}**`, inline: true },
+      { name: "Top PVP", value: safeField(topPvp, 900), inline: false },
+      { name: "Metas em andamento", value: safeField(goals.slice(0, 5).map(goalLine).join("\n") || "Nenhuma meta ativa.", 900), inline: false },
+    )
+    .setTimestamp();
+}
+
+function crewStatusEmbed(guild, store) {
+  const activeShifts = Object.values(store.shifts || {}).filter((shift) => shift.startedAt && !shift.endedAt);
+  const openTickets = Object.keys(store.tickets.openByUser || {}).length;
+  const activeGoals = Object.values(store.goals || {}).filter((goal) => !goal.done).slice(0, 5);
+  const latestPresence = Object.values(store.presences || {})
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+  const topPvp = Object.entries(store.pvp.players || {})
+    .sort(([, a], [, b]) => (b.wins || 0) - (a.wins || 0))
+    .slice(0, 5)
+    .map(([id, stats], index) => `${index + 1}. <@${id}> - ${stats.wins || 0} vitorias`)
+    .join("\n") || "Sem ranking ainda.";
+
+  return baseEmbed(guild)
+    .setTitle(`Status da ${config.brandName}`)
+    .setDescription("Painel rapido para acompanhar a operacao da crew.")
+    .addFields(
+      { name: "Servidor", value: `Membros: **${guild.memberCount || 0}**\nTickets abertos: **${openTickets}**`, inline: true },
+      { name: "Plantao", value: activeShifts.length ? activeShifts.map((shift) => `<@${shift.userId}>`).slice(0, 8).join("\n") : "Ninguem em plantao.", inline: true },
+      { name: "Ultima presenca", value: latestPresence ? `**${latestPresence.title}**\nConfirmados: **${Object.keys(latestPresence.members || {}).length}**` : "Nenhuma presenca criada.", inline: true },
+      { name: "Metas ativas", value: safeField(activeGoals.map(goalLine).join("\n") || "Nenhuma meta ativa.", 900), inline: false },
+      { name: "Top PVP", value: safeField(topPvp, 900), inline: false },
+    )
+    .setTimestamp();
 }
 
 async function handlePresenceButton(interaction) {
@@ -3741,6 +3976,38 @@ async function clearMessages(interaction) {
   await interaction.editReply(`Limpei **${deleted.size}** mensagem(ns)${user ? ` de ${user}` : ""}. Mensagens com mais de 14 dias sao ignoradas pelo Discord.`);
 }
 
+async function nukeChannel(interaction) {
+  const channel = interaction.channel;
+  if (!channel || channel.type !== ChannelType.GuildText) {
+    await interaction.reply(hidden({ content: "Use /nuke em um canal de texto normal." }));
+    return;
+  }
+  const reason = interaction.options.getString("motivo") || `Nuke por ${interaction.user.tag}`;
+  await interaction.reply(hidden({ content: "Nukando canal..." }));
+  const clone = await channel.clone({
+    name: channel.name,
+    reason,
+  });
+  await clone.setPosition(channel.position).catch(() => {});
+  await clone.send({
+    embeds: [baseEmbed(interaction.guild)
+      .setTitle("Canal nukado")
+      .setDescription(`Todas as mensagens antigas foram apagadas.\nResponsavel: ${interaction.user}\nMotivo: ${safeField(reason)}`)
+      .setColor(0xff3b5c)],
+  }).catch(() => {});
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: canal nukado",
+    color: 0xff3b5c,
+    fields: [
+      ["Responsavel", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Canal antigo", `${channel.name} (\`${channel.id}\`)`],
+      ["Canal novo", `${clone} (\`${clone.id}\`)`],
+      ["Motivo", reason],
+    ],
+  });
+  await channel.delete(reason).catch(() => {});
+}
+
 function recruitmentEmbed(guild, bannerUrl = "") {
   const embed = baseEmbed(guild)
     .setTitle(`${emo(guild, "recruit")} Recrutamento Oficial`)
@@ -4493,6 +4760,8 @@ function guildData(guildId) {
   store.auditLogChannelId ||= "";
   store.suggestionChannelId ||= "";
   store.warns ||= {};
+  store.strikes ||= {};
+  store.welcome ||= {};
   store.goals ||= {};
   store.presences ||= {};
   store.shifts ||= {};
