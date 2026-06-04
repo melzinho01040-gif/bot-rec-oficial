@@ -15,6 +15,7 @@ const {
   REST,
   Routes,
   SlashCommandBuilder,
+  StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
   UserSelectMenuBuilder,
@@ -650,22 +651,22 @@ const commands = [
     .addChannelOption((option) =>
       option
         .setName("canal_sair_crew")
-        .setDescription("Canal onde abre o topico de sair da crew")
+        .setDescription("Canal base dos topicos de sair da crew")
         .addChannelTypes(ChannelType.GuildText)
-        .setRequired(true),
+        .setRequired(false),
     )
     .addChannelOption((option) =>
       option
         .setName("canal_suporte")
-        .setDescription("Canal onde abre o topico de suporte tecnico")
+        .setDescription("Canal base dos topicos de suporte")
         .addChannelTypes(ChannelType.GuildText)
-        .setRequired(true),
+        .setRequired(false),
     )
     .addRoleOption((option) =>
       option
         .setName("cargo_suporte")
         .setDescription("Cargo que pode ver/assumir tickets")
-        .setRequired(true),
+        .setRequired(false),
     )
     .addRoleOption((option) =>
       option
@@ -1019,6 +1020,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isUserSelectMenu()) {
       await handleUserSelect(interaction);
+      return;
+    }
+
+    if (interaction.isStringSelectMenu()) {
+      await handleStringSelect(interaction);
       return;
     }
 
@@ -2867,6 +2873,11 @@ async function handleButton(interaction) {
     return;
   }
 
+  if (id.startsWith("ticket_channel_close:")) {
+    await closeTicketChannel(interaction);
+    return;
+  }
+
   if (id.startsWith("review_")) {
     await handleReviewButton(interaction);
   }
@@ -2875,6 +2886,12 @@ async function handleButton(interaction) {
 async function handleUserSelect(interaction) {
   if (interaction.customId.startsWith("tadd:")) {
     await addPeopleToTicket(interaction);
+  }
+}
+
+async function handleStringSelect(interaction) {
+  if (interaction.customId.startsWith("tcselect:")) {
+    await startTicketModalFromSelect(interaction);
   }
 }
 
@@ -3387,29 +3404,90 @@ async function createTicket(interaction) {
   });
 
   await channel.send({
-    content: `${interaction.user} abriu um ticket.`,
+    content: [String(interaction.user), config.staffRoleId ? `<@&${config.staffRoleId}>` : ""].filter(Boolean).join(" "),
     embeds: [baseEmbed(interaction.guild)
-      .setTitle("Atendimento aberto")
-      .setDescription("Explique o que voce precisa, mande print se tiver, e aguarde a equipe.")],
+      .setTitle(`${emo(interaction.guild, "ticket")} Atendimento aberto`)
+      .setDescription([
+        `Atendimento aberto para ${interaction.user}.`,
+        "",
+        "**Status:** Aguardando equipe",
+        "**Tipo:** Servicos / atendimento geral",
+        "",
+        "Explique o que voce precisa, envie prints se tiver e aguarde a equipe.",
+      ].join("\n"))
+      .setColor(0x7b2cff)],
+    components: [new ActionRowBuilder().addComponents(
+      button(`ticket_channel_close:${interaction.user.id}`, "Fechar atendimento", ButtonStyle.Danger, "close", interaction.guild),
+    )],
+    allowedMentions: { users: [interaction.user.id], roles: config.staffRoleId ? [config.staffRoleId] : [] },
   });
 
   await interaction.editReply(`Ticket criado: ${channel}`);
 }
 
+async function closeTicketChannel(interaction) {
+  const [, openerId] = String(interaction.customId).split(":");
+  const canClose = interaction.user.id === openerId
+    || interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)
+    || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
+    || (config.staffRoleId && interaction.member?.roles?.cache?.has(config.staffRoleId));
+  if (!canClose) {
+    await interaction.reply(hidden({ content: "Apenas quem abriu ou a equipe pode fechar este ticket." }));
+    return;
+  }
+  const transcript = await buildTranscript(interaction.channel);
+  const attachment = new AttachmentBuilder(Buffer.from(transcript, "utf8"), {
+    name: `transcript-${interaction.channel.id}.txt`,
+  });
+  const store = guildData(interaction.guildId);
+  const logChannel = await resolveChannel(
+    interaction.guild,
+    store.auditLogChannelId || config.auditLogChannelId || config.applicationLogChannelId || config.applicationReviewChannelId,
+  );
+  if (logChannel?.isTextBased?.()) {
+    await logChannel.send({
+      embeds: [baseEmbed(interaction.guild)
+        .setTitle("Auditoria: ticket de canal fechado")
+        .setColor(0xff3b5c)
+        .addFields(
+          { name: "Aberto por", value: `<@${openerId}> (\`${openerId}\`)`, inline: true },
+          { name: "Fechado por", value: `${interaction.user} (\`${interaction.user.id}\`)`, inline: true },
+          { name: "Canal", value: `${interaction.channel.name} (\`${interaction.channel.id}\`)`, inline: false },
+        )],
+      files: [attachment],
+    }).catch(() => {});
+  }
+  await interaction.reply({
+    embeds: [baseEmbed(interaction.guild)
+      .setTitle("Atendimento fechado")
+      .setDescription(`Fechado por ${interaction.user}. Este canal sera deletado em alguns segundos.`)
+      .setColor(0xff3b5c)],
+  });
+  setTimeout(() => {
+    interaction.channel?.delete(`Ticket fechado por ${interaction.user.tag}`).catch(() => {});
+  }, 5000);
+}
+
 async function setupTicketCenter(interaction) {
-  const leaveChannel = interaction.options.getChannel("canal_sair_crew", true);
-  const supportChannel = interaction.options.getChannel("canal_suporte", true);
-  const supportRole = interaction.options.getRole("cargo_suporte", true);
+  const leaveChannel = interaction.options.getChannel("canal_sair_crew", false);
+  const supportChannel = interaction.options.getChannel("canal_suporte", false);
+  const supportRole = interaction.options.getRole("cargo_suporte", false);
   const adminRole = interaction.options.getRole("cargo_admin", false);
   const logChannel = interaction.options.getChannel("canal_logs", false);
+  const parentChannel = supportChannel || leaveChannel || interaction.channel;
+  const supportRoleId = supportRole?.id || config.staffRoleId || "0";
 
-  if (!(await ensureTicketParent(interaction, leaveChannel))) return;
-  if (supportChannel.id !== leaveChannel.id && !(await ensureTicketParent(interaction, supportChannel))) return;
+  if (!(await ensureTicketParent(interaction, parentChannel))) return;
   if (logChannel && !(await ensurePanelTarget(interaction, logChannel))) return;
 
   await interaction.reply({
-    embeds: [ticketCenterEmbed(interaction.guild, { leaveChannel, supportChannel, supportRole, adminRole, logChannel })],
-    components: [ticketCenterButtons(interaction.guild, { leaveChannel, supportChannel, supportRole, adminRole, logChannel })],
+    embeds: [ticketCenterEmbed(interaction.guild)],
+    components: [ticketCenterMenu(interaction.guild, {
+      parentChannelId: parentChannel.id,
+      supportRoleId,
+      adminRoleId: adminRole?.id || "0",
+      logChannelId: logChannel?.id || "0",
+    })],
   });
 }
 
@@ -3439,48 +3517,75 @@ async function ensureTicketParent(interaction, channel) {
   return true;
 }
 
-function ticketCenterEmbed(guild, setup) {
+function ticketCenterEmbed(guild) {
   return baseEmbed(guild)
-    .setTitle(`${emo(guild, "ticket")} Central de Tickets`)
+    .setTitle("Atendimento ao publico")
     .setDescription([
-      "Escolha o atendimento certo abaixo e preencha o formulario.",
-      "O bot abre um topico privado, chama a equipe, registra logs e gera transcript no fechamento.",
-      "Tickets podem ser assumidos, isolados, receber convidados e ser fechados com historico.",
+      "## Central de ajuda",
+      "",
+      "**Peca ajuda, tire suas duvidas, faca denuncias e fale com a equipe.**",
+      "",
+      "- Escolha uma opcao no menu abaixo para abrir um ticket.",
+      "- Explique tudo com calma no formulario.",
+      "- Um membro da equipe vai assumir seu atendimento.",
+      "- Quanto mais detalhes, mais rapido fica o suporte.",
     ].join("\n"))
     .addFields(
       {
-        name: `${emo(guild, "leave")} Quero sair da crew`,
-        value: "Atendimento privado com a equipe.",
-        inline: true,
+        name: `${emo(guild, "support")} Como funciona`,
+        value: [
+          "O bot cria um topico privado para voce e a equipe.",
+          "O ticket pode ser assumido, receber convidados e gerar transcript ao fechar.",
+          "Canais e cargos configurados ficam ocultos no painel.",
+        ].join("\n"),
+        inline: false,
       },
       {
-        name: `${emo(guild, "support")} Suporte tecnico`,
-        value: "Ajuda com erros, duvidas e problemas.",
-        inline: true,
-      },
-      {
-        name: `${emo(guild, "warn")} Denuncia`,
-        value: "Envie provas e detalhes com seguranca.",
-        inline: true,
-      },
-      {
-        name: `${emo(guild, "spark")} Parceria/Outros`,
-        value: "Propostas, assuntos gerais e contato.",
-        inline: true,
+        name: `${emo(guild, "staff")} Sigilo`,
+        value: "Evite marcar staff sem necessidade. O sistema ja avisa a equipe quando o ticket abre.",
+        inline: false,
       },
     )
     .setFooter({ text: `${config.brandName} | Atendimento privado` });
 }
 
-function ticketCenterButtons(guild, setup) {
-  const adminRoleId = setup.adminRole?.id || "0";
-  const logChannelId = setup.logChannel?.id || "0";
-
+function ticketCenterMenu(guild, setup) {
   return new ActionRowBuilder().addComponents(
-    button(`tc:crew:${setup.leaveChannel.id}:${setup.supportRole.id}:${adminRoleId}:${logChannelId}`, "Sair da crew", ButtonStyle.Danger, "leave", guild),
-    button(`tc:tech:${setup.supportChannel.id}:${setup.supportRole.id}:${adminRoleId}:${logChannelId}`, "Suporte tecnico", ButtonStyle.Primary, "support", guild),
-    button(`tc:report:${setup.supportChannel.id}:${setup.supportRole.id}:${adminRoleId}:${logChannelId}`, "Denuncia", ButtonStyle.Secondary, "warn", guild),
-    button(`tc:partner:${setup.supportChannel.id}:${setup.supportRole.id}:${adminRoleId}:${logChannelId}`, "Parceria", ButtonStyle.Success, "spark", guild),
+    new StringSelectMenuBuilder()
+      .setCustomId(`tcselect:${setup.parentChannelId}:${setup.supportRoleId}:${setup.adminRoleId}:${setup.logChannelId}`)
+      .setPlaceholder(`${emojiText(guild, "ticket")} Clique aqui para escolher uma opcao`)
+      .addOptions(
+        {
+          label: "Suporte",
+          description: "Peca suporte da equipe",
+          value: "tech",
+          emoji: emojiValue(guild, "support") || undefined,
+        },
+        {
+          label: "Denuncias",
+          description: "Faca uma denuncia com provas",
+          value: "report",
+          emoji: emojiValue(guild, "warn") || undefined,
+        },
+        {
+          label: "Duvidas",
+          description: "Tire sua duvida com a equipe",
+          value: "question",
+          emoji: emojiValue(guild, "support") || undefined,
+        },
+        {
+          label: "Sair da crew",
+          description: "Fale com a lideranca sobre saida",
+          value: "crew",
+          emoji: emojiValue(guild, "leave") || undefined,
+        },
+        {
+          label: "Sorteio / Resgate",
+          description: "Resgate premio ou fale sobre sorteio",
+          value: "prize",
+          emoji: emojiValue(guild, "spark") || undefined,
+        },
+      ),
   );
 }
 
@@ -3493,13 +3598,22 @@ async function startTicketModal(interaction) {
   await interaction.showModal(ticketOpenModal(parsed));
 }
 
+async function startTicketModalFromSelect(interaction) {
+  const parsed = parseTicketSelectId(interaction.customId, interaction.values?.[0]);
+  if (!parsed) {
+    await interaction.reply(hidden({ content: "Essa central de ticket esta invalida. Peça para um admin criar outra." }));
+    return;
+  }
+  await interaction.showModal(ticketOpenModal(parsed));
+}
+
 function ticketOpenModal(ticket) {
   return new ModalBuilder()
     .setCustomId(`tm:${ticket.type}:${ticket.parentChannelId}:${ticket.supportRoleId}:${ticket.adminRoleId}:${ticket.logChannelId}`)
     .setTitle(ticketTypeLabel(ticket.type).slice(0, 45))
     .addComponents(
-      textInput("ticket_subject", "Assunto do ticket", "Ex.: preciso falar com suporte sobre...", TextInputStyle.Short),
-      textInput("ticket_details", "Explique com detalhes", "Conte o que aconteceu, mande contexto e o que voce precisa.", TextInputStyle.Paragraph),
+      textInput("ticket_subject", ticketSubjectLabel(ticket.type), ticketSubjectPlaceholder(ticket.type), TextInputStyle.Short),
+      textInput("ticket_details", "Explique com detalhes", ticketDetailsPlaceholder(ticket.type), TextInputStyle.Paragraph),
       textInput("ticket_roblox", "Nome no Roblox", "Ex.: SeuNickRoblox ou N/A", TextInputStyle.Short),
       textInput("ticket_platform", "Plataforma", "PC, mobile, console ou N/A", TextInputStyle.Short),
     );
@@ -3636,18 +3750,19 @@ async function createAdvancedTicketThread(interaction, parsed, form) {
 }
 
 function ticketInitialEmbed(guild, user, ticket, form = null) {
-  const isCrew = ticket.type === "crew";
   const embed = baseEmbed(guild)
-    .setTitle(`${isCrew ? emo(guild, "leave") : emo(guild, "support")} ${ticketTypeLabel(ticket.type)}`)
+    .setTitle(`${ticketTypeEmoji(guild, ticket.type)} ${ticketTypeLabel(ticket.type)}`)
     .setDescription([
-      `${user}, seu atendimento foi aberto com prioridade organizada.`,
+      `Atendimento aberto para ${user}.`,
       "",
-      isCrew
-        ? "Diga por que quer sair da crew e se precisa falar com algum responsavel."
-        : ticketTypeGuide(ticket.type),
+      "**Status:** Aguardando equipe",
+      `**Prioridade:** ${ticketTypePriority(ticket.type)}`,
       "",
-      "Um suporte pode assumir o atendimento pelo botao abaixo.",
+      ticketTypeGuide(ticket.type),
+      "",
+      "Use os botoes abaixo para assumir, adicionar pessoas ou fechar com transcript.",
     ].join("\n"))
+    .setColor(ticketTypeColor(ticket.type))
     .setTimestamp();
   if (form) {
     embed.addFields(
@@ -3669,15 +3784,15 @@ function ticketComponents(guild, openerId, ticket, assumerId = "0") {
 
 function ticketButtonRow(guild, openerId, ticket, assumerId = "0") {
   const row = new ActionRowBuilder();
-  const claim = button(`tclaim:${openerId}:${ticket.supportRoleId}:${ticket.adminRoleId}:${ticket.logChannelId}`, "Assumir", ButtonStyle.Success, "claim", guild);
+  const claim = button(`tclaim:${openerId}:${ticket.supportRoleId}:${ticket.adminRoleId}:${ticket.logChannelId}`, assumerId === "0" ? "Assumir" : "Assumido", ButtonStyle.Success, "claim", guild);
   if (assumerId !== "0") claim.setDisabled(true);
 
   row.addComponents(
     claim,
-    button(`tleave:${openerId}`, "Sair", ButtonStyle.Secondary, "leave", guild),
+    button(`tleave:${openerId}`, "Sair do ticket", ButtonStyle.Secondary, "leave", guild),
     assumerId === "0"
-      ? button(`x:${openerId}:${ticket.logChannelId}:r:${ticket.supportRoleId}:${ticket.adminRoleId}`, "Fechar", ButtonStyle.Danger, "close", guild)
-      : button(`x:${openerId}:${ticket.logChannelId}:u:${assumerId}`, "Fechar", ButtonStyle.Danger, "close", guild),
+      ? button(`x:${openerId}:${ticket.logChannelId}:r:${ticket.supportRoleId}:${ticket.adminRoleId}`, "Fechar com transcript", ButtonStyle.Danger, "close", guild)
+      : button(`x:${openerId}:${ticket.logChannelId}:u:${assumerId}`, "Fechar com transcript", ButtonStyle.Danger, "close", guild),
   );
 
   return row;
@@ -3728,6 +3843,19 @@ async function claimTicket(interaction) {
   await isolateThreadMembers(interaction.channel, [ticket.openerId, interaction.user.id, client.user.id]);
 
   await interaction.message.edit({
+    embeds: interaction.message.embeds.length
+      ? [EmbedBuilder.from(interaction.message.embeds[0])
+        .setDescription([
+          `Atendimento aberto para <@${ticket.openerId}>.`,
+          "",
+          `**Status:** Assumido por ${interaction.user}`,
+          "**Prioridade:** Em andamento",
+          "",
+          "A equipe ja esta cuidando deste ticket.",
+          "",
+          "Use os botoes abaixo para adicionar pessoas ou fechar com transcript.",
+        ].join("\n"))]
+      : undefined,
     components: ticketComponents(interaction.guild, ticket.openerId, ticket, interaction.user.id),
   }).catch(() => {});
 
@@ -3879,7 +4007,13 @@ function parseTicketOpenId(customId) {
 
 function parseTicketModalId(customId) {
   const [, type, parentChannelId, supportRoleId, adminRoleId, logChannelId] = String(customId).split(":");
-  if (!["crew", "tech", "report", "partner"].includes(type) || !/^\d{10,25}$/.test(parentChannelId)) return null;
+  if (!isTicketType(type) || !/^\d{10,25}$/.test(parentChannelId)) return null;
+  return { type, parentChannelId, supportRoleId, adminRoleId, logChannelId };
+}
+
+function parseTicketSelectId(customId, type) {
+  const [, parentChannelId, supportRoleId, adminRoleId, logChannelId] = String(customId).split(":");
+  if (!isTicketType(type) || !/^\d{10,25}$/.test(parentChannelId)) return null;
   return { type, parentChannelId, supportRoleId, adminRoleId, logChannelId };
 }
 
@@ -3914,6 +4048,8 @@ function ticketTypeLabel(type) {
   if (type === "crew") return "Quero sair da crew";
   if (type === "report") return "Denuncia";
   if (type === "partner") return "Parceria";
+  if (type === "question") return "Duvidas";
+  if (type === "prize") return "Sorteio / Resgate";
   return "Suporte tecnico";
 }
 
@@ -3921,12 +4057,17 @@ function ticketTypeShort(type) {
   if (type === "crew") return "crew";
   if (type === "report") return "denuncia";
   if (type === "partner") return "parceria";
+  if (type === "question") return "duvida";
+  if (type === "prize") return "resgate";
   return "suporte";
 }
 
 function ticketTypeGuide(type) {
   if (type === "report") return "Informe quem esta envolvido, provas, horarios e links/prints se tiver.";
   if (type === "partner") return "Explique a proposta, servidor/perfil envolvido e o que a parceria oferece.";
+  if (type === "crew") return "Explique o motivo da saida e se precisa falar com algum lider.";
+  if (type === "question") return "Descreva sua duvida e diga exatamente onde voce travou.";
+  if (type === "prize") return "Informe qual premio, sorteio ou resgate voce quer tratar e envie provas se tiver.";
   return "Diga o erro, onde aconteceu, mande prints e informe seu dispositivo.";
 }
 
@@ -3934,7 +4075,51 @@ function ticketTypeColor(type) {
   if (type === "crew") return 0xff3b5c;
   if (type === "report") return 0xffc857;
   if (type === "partner") return 0x00ff85;
+  if (type === "question") return 0x44d7ff;
+  if (type === "prize") return 0xfff04d;
   return 0x7b2cff;
+}
+
+function ticketTypeEmoji(guild, type) {
+  if (type === "crew") return emo(guild, "leave");
+  if (type === "report") return emo(guild, "warn");
+  if (type === "question") return emo(guild, "support");
+  if (type === "prize") return emo(guild, "spark");
+  return emo(guild, "support");
+}
+
+function ticketTypePriority(type) {
+  if (type === "report") return "Alta";
+  if (type === "prize") return "Media";
+  return "Normal";
+}
+
+function ticketSubjectLabel(type) {
+  if (type === "report") return "Quem/qual problema voce denuncia?";
+  if (type === "prize") return "Qual premio ou sorteio?";
+  if (type === "question") return "Qual e a sua duvida?";
+  if (type === "crew") return "Motivo principal";
+  return "Assunto do ticket";
+}
+
+function ticketSubjectPlaceholder(type) {
+  if (type === "report") return "Ex.: jogador x fez tal coisa";
+  if (type === "prize") return "Ex.: premio do sorteio de hoje";
+  if (type === "question") return "Ex.: duvida sobre recrutamento";
+  if (type === "crew") return "Ex.: quero sair da crew por...";
+  return "Ex.: preciso de suporte sobre...";
+}
+
+function ticketDetailsPlaceholder(type) {
+  if (type === "report") return "Conte o que aconteceu, quando aconteceu e quais provas voce tem.";
+  if (type === "prize") return "Mande contexto, print/link do sorteio e seu nick.";
+  if (type === "question") return "Explique sua duvida com detalhes para a equipe responder rapido.";
+  if (type === "crew") return "Explique a situacao e se quer falar com algum responsavel.";
+  return "Conte o que aconteceu, mande contexto e o que voce precisa.";
+}
+
+function isTicketType(type) {
+  return ["crew", "tech", "report", "partner", "question", "prize"].includes(type);
 }
 
 function ticketOpenKey(userId, type) {
