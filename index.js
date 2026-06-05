@@ -2924,7 +2924,7 @@ async function handleButton(interaction) {
   }
 
   if (id.startsWith("apply_staff")) {
-    await interaction.showModal(staffModal(getCustomIdTarget(id), getCustomIdRole(id)));
+    await interaction.showModal(staffModal(getCustomIdTarget(id), getCustomIdRole(id), getCustomIdCategory(id)));
     return;
   }
 
@@ -3019,6 +3019,7 @@ async function handleModal(interaction) {
       emoji: emo(interaction.guild, "staff"),
       roleId: getCustomIdRole(interaction.customId) || config.staffRoleId,
       targetChannelId: getCustomIdTarget(interaction.customId),
+      categoryId: getCustomIdCategory(interaction.customId),
       fields: [
         ["Tempo online", "staff_time"],
         ["Experiencia de staff", "staff_experience"],
@@ -3165,7 +3166,7 @@ function applicationMentionPayload(interaction, application) {
 }
 
 async function resolveApplicationDestination(interaction, application, answers, roblox) {
-  if (application.kind === "Recrutamento" && normalizeSnowflake(application.categoryId)) {
+  if ((application.kind === "Recrutamento" || application.kind === "Staff") && normalizeSnowflake(application.categoryId)) {
     const channel = await createRecruitmentApplicationChannel(interaction, application, answers, roblox);
     if (channel) return channel;
   }
@@ -3212,6 +3213,17 @@ async function createRecruitmentApplicationChannel(interaction, application, ans
         PermissionFlagsBits.ReadMessageHistory,
       ],
     },
+    ...(normalizeSnowflake(config.staffRoleId)
+      ? [{
+        id: config.staffRoleId,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory,
+          PermissionFlagsBits.ManageMessages,
+        ],
+      }]
+      : []),
   ];
 
   return interaction.guild.channels.create({
@@ -3219,7 +3231,7 @@ async function createRecruitmentApplicationChannel(interaction, application, ans
     type: ChannelType.GuildText,
     parent: category.id,
     topic: `Recrutamento de ${interaction.user.tag} (${interaction.user.id})`,
-    permissionOverwrites: overwrites,
+    permissionOverwrites: dedupePermissionOverwrites(overwrites),
     reason: `Formulario de recrutamento enviado por ${interaction.user.tag}`,
   }).catch(async (error) => {
     console.warn(`[WARN] Nao consegui criar canal de recrutamento: ${error.message}`);
@@ -3228,8 +3240,17 @@ async function createRecruitmentApplicationChannel(interaction, application, ans
   });
 }
 
+function dedupePermissionOverwrites(overwrites) {
+  const byId = new Map();
+  for (const overwrite of overwrites) {
+    if (!overwrite?.id) continue;
+    byId.set(overwrite.id, overwrite);
+  }
+  return [...byId.values()];
+}
+
 function isRecruitmentApplicationChannel(channel, application, userId) {
-  return application.kind === "Recrutamento"
+  return (application.kind === "Recrutamento" || application.kind === "Staff")
     && normalizeSnowflake(application.categoryId)
     && channel?.parentId === application.categoryId
     && String(channel.topic || "").includes(userId);
@@ -4827,7 +4848,7 @@ function apiStatusEmbed(status, guild) {
 
 function recruitmentButtons(targetChannelId = "default", guild, roles = {}, categoryId = "") {
   return new ActionRowBuilder().addComponents(
-    button(buildApplyCustomId("apply_staff", targetChannelId, roles.staffRoleId || config.staffRoleId), "Staff", ButtonStyle.Primary, "staff", guild),
+    button(buildApplyCustomId("apply_staff", targetChannelId, roles.staffRoleId || config.staffRoleId, categoryId), "Staff", ButtonStyle.Primary, "staff", guild),
     button(buildApplyCustomId("apply_recruit", targetChannelId, roles.memberRoleId || config.memberRoleId, categoryId), "Recrutamento", ButtonStyle.Secondary, "recruit", guild),
   );
 }
@@ -4882,9 +4903,9 @@ function stockButtons(guild) {
   );
 }
 
-function staffModal(targetChannelId = "default", approvedRoleId = "none") {
+function staffModal(targetChannelId = "default", approvedRoleId = "none", categoryId = "none") {
   return new ModalBuilder()
-    .setCustomId(`modal_staff:${targetChannelId || "default"}:${normalizeSnowflake(approvedRoleId) || "none"}`)
+    .setCustomId(`modal_staff:${targetChannelId || "default"}:${normalizeSnowflake(approvedRoleId) || "none"}:${normalizeSnowflake(categoryId) || "none"}`)
     .setTitle("Aplicacao para Staff")
     .addComponents(
       textInput("staff_time", "Quanto tempo online voce tem disponivel?", "Ex.: 4h por dia, geralmente das 19h as 23h.", TextInputStyle.Paragraph),
