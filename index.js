@@ -56,6 +56,8 @@ const config = {
   stockShowSource: String(process.env.STOCK_SHOW_SOURCE || "false").toLowerCase() === "true",
   stockBrandName: process.env.STOCK_BRAND_NAME || "Divine Hunters",
   stockLogoUrl: process.env.STOCK_LOGO_URL || "",
+  storeName: process.env.STORE_NAME || process.env.BRAND_NAME || "Divine Hunters",
+  pixKey: process.env.PIX_KEY || "Configure PIX_KEY no Railway",
   boostChannelId: process.env.BOOST_CHANNEL_ID || "",
   ticketCategoryId: process.env.TICKET_CATEGORY_ID || "",
   staffRoleId: process.env.STAFF_ROLE_ID || "",
@@ -179,6 +181,19 @@ const commands = [
         .setDescription("URL de banner para esse embed")
         .setRequired(false),
     ),
+  new SlashCommandBuilder()
+    .setName("setup-loja")
+    .setDescription("Envia o painel de vendas de planos.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addChannelOption((option) =>
+      option.setName("canal").setDescription("Canal onde a loja sera enviada").addChannelTypes(ChannelType.GuildText).setRequired(false),
+    )
+    .addStringOption((option) =>
+      option.setName("banner_url").setDescription("Banner opcional da loja").setRequired(false),
+    ),
+  new SlashCommandBuilder()
+    .setName("planos")
+    .setDescription("Mostra os planos disponiveis da loja."),
   new SlashCommandBuilder()
     .setName("recrutamento")
     .setDescription("Central moderna de recrutamento.")
@@ -1198,6 +1213,16 @@ async function handleCommand(interaction) {
     return;
   }
 
+  if (command === "setup-loja") {
+    await handleShopSetup(interaction);
+    return;
+  }
+
+  if (command === "planos") {
+    await handlePlansCommand(interaction);
+    return;
+  }
+
   if (command === "recrutamento") {
     const subcommand = interaction.options.getSubcommand();
     if (subcommand === "setup") {
@@ -1517,6 +1542,227 @@ async function setupRecruitmentPanel(interaction) {
   await interaction.reply(hidden({
     content: `Painel de recrutamento enviado em ${panelChannel}. Cada formulario vai criar um canal em **${category.name}**.`,
   }));
+}
+
+async function handleShopSetup(interaction) {
+  const channel = interaction.options.getChannel("canal", false) || interaction.channel;
+  const bannerUrl = safeImageUrl(interaction.options.getString("banner_url", false)) || config.bannerUrl;
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+  const store = guildData(interaction.guildId);
+  ensureShopDefaults(store);
+  await channel.send({
+    embeds: [shopPanelEmbed(interaction.guild, store.shop.plans, bannerUrl)],
+    components: [shopPlanSelect(store.shop.plans)],
+  });
+  await interaction.reply(hidden({ content: `Painel de vendas enviado em ${channel}.` }));
+}
+
+async function handlePlansCommand(interaction) {
+  const store = guildData(interaction.guildId);
+  ensureShopDefaults(store);
+  await interaction.reply({
+    embeds: [shopPanelEmbed(interaction.guild, store.shop.plans, config.bannerUrl)],
+    components: [shopPlanSelect(store.shop.plans)],
+  });
+}
+
+async function handleShopPlanSelect(interaction) {
+  const store = guildData(interaction.guildId);
+  ensureShopDefaults(store);
+  const planId = interaction.values?.[0];
+  const plan = store.shop.plans.find((item) => item.id === planId);
+  if (!plan) {
+    await interaction.reply(hidden({ content: "Esse plano nao existe mais. Peça para a equipe reenviar a loja." }));
+    return;
+  }
+  await createShopOrderTicket(interaction, plan);
+}
+
+async function createShopOrderTicket(interaction, plan) {
+  await interaction.deferReply({ flags: EPHEMERAL });
+  const store = guildData(interaction.guildId);
+  const orderId = shortId("ord");
+  const cleanName = slugChannelName(`${plan.name}-${interaction.user.username}`).slice(0, 42) || "pedido";
+  const parentId = normalizeSnowflake(config.ticketCategoryId) || null;
+  const overwrites = [
+    {
+      id: interaction.guild.roles.everyone.id,
+      deny: [PermissionFlagsBits.ViewChannel],
+    },
+    {
+      id: interaction.user.id,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+    },
+    ...(normalizeSnowflake(config.staffRoleId)
+      ? [{
+        id: config.staffRoleId,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages],
+      }]
+      : []),
+  ];
+
+  const channel = await interaction.guild.channels.create({
+    name: `pedido-${cleanName}`.slice(0, 90),
+    type: ChannelType.GuildText,
+    parent: parentId,
+    topic: `Pedido ${orderId} de ${interaction.user.tag} (${interaction.user.id})`,
+    permissionOverwrites: dedupePermissionOverwrites(overwrites),
+    reason: `Pedido de plano ${plan.name} por ${interaction.user.tag}`,
+  }).catch(async (error) => {
+    console.warn(`[SHOP] Nao consegui criar ticket de compra: ${error.message}`);
+    await interaction.editReply("Nao consegui criar o ticket de compra. Confira permissao Gerenciar canais e categoria de tickets.");
+    return null;
+  });
+  if (!channel) return;
+
+  const order = {
+    id: orderId,
+    userId: interaction.user.id,
+    planId: plan.id,
+    status: "aguardando_pagamento",
+    channelId: channel.id,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  store.shop.orders[orderId] = order;
+  scheduleDataSave();
+
+  await channel.send({
+    content: [String(interaction.user), normalizeSnowflake(config.staffRoleId) ? `<@&${config.staffRoleId}>` : ""].filter(Boolean).join(" "),
+    embeds: [shopOrderEmbed(interaction.guild, order, plan)],
+    components: shopPaymentRows(orderId),
+    allowedMentions: { users: [interaction.user.id], roles: normalizeSnowflake(config.staffRoleId) ? [config.staffRoleId] : [] },
+  });
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: pedido de plano aberto",
+    color: 0x7b2cff,
+    fields: [
+      ["Cliente", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Plano", `${plan.name} - R$ ${plan.price}/${plan.period}`],
+      ["Pedido", orderId],
+      ["Canal", `${channel}`],
+    ],
+  });
+  await interaction.editReply(`Pedido criado: ${channel}. Envie o comprovante depois do pagamento.`);
+}
+
+async function handleShopOrderButton(interaction) {
+  const [, action, orderId] = String(interaction.customId).split(":");
+  if (action === "proof") {
+    const order = findShopOrder(interaction.guildId, orderId);
+    if (!order || order.userId !== interaction.user.id) {
+      await interaction.reply(hidden({ content: "Esse pedido nao pertence a voce." }));
+      return;
+    }
+    await interaction.showModal(new ModalBuilder()
+      .setCustomId(`order:proof-modal:${orderId}`)
+      .setTitle("Enviar comprovante")
+      .addComponents(
+        textInput("payer", "Nome de quem pagou", "Ex.: Gabriel Silva", TextInputStyle.Short),
+        textInput("details", "Detalhes do pagamento", "Cole Pix, horario, banco ou observacoes do comprovante.", TextInputStyle.Paragraph),
+      ));
+    return;
+  }
+  if (action === "approve") {
+    await updateShopOrderStatus(interaction, orderId, "aprovado");
+    return;
+  }
+  if (action === "reject") {
+    await updateShopOrderStatus(interaction, orderId, "reprovado");
+    return;
+  }
+  if (action === "close") {
+    await closeShopOrder(interaction, orderId);
+  }
+}
+
+async function handleShopProofModal(interaction) {
+  const [, , orderId] = String(interaction.customId).split(":");
+  const store = guildData(interaction.guildId);
+  const order = store.shop.orders[orderId];
+  if (!order || order.userId !== interaction.user.id) {
+    await interaction.reply(hidden({ content: "Pedido nao encontrado ou nao pertence a voce." }));
+    return;
+  }
+  order.status = "em_analise";
+  order.proof = {
+    payer: interaction.fields.getTextInputValue("payer"),
+    details: interaction.fields.getTextInputValue("details"),
+    sentAt: Date.now(),
+  };
+  order.updatedAt = Date.now();
+  scheduleDataSave();
+  await interaction.reply(hidden({ content: "Comprovante enviado para analise da equipe." }));
+  await interaction.channel.send({
+    embeds: [baseEmbed(interaction.guild)
+      .setTitle("Comprovante enviado")
+      .setColor(0xffc857)
+      .addFields(
+        { name: "Pedido", value: order.id, inline: true },
+        { name: "Cliente", value: `<@${order.userId}>`, inline: true },
+        { name: "Nome", value: safeField(order.proof.payer), inline: false },
+        { name: "Detalhes", value: safeField(order.proof.details), inline: false },
+      )],
+  });
+}
+
+async function updateShopOrderStatus(interaction, orderId, status) {
+  if (!isShopStaff(interaction.member)) {
+    await interaction.reply(hidden({ content: "Apenas a equipe pode aprovar ou reprovar pedidos." }));
+    return;
+  }
+  const store = guildData(interaction.guildId);
+  const order = store.shop.orders[orderId];
+  const plan = order ? store.shop.plans.find((item) => item.id === order.planId) : null;
+  if (!order || !plan) {
+    await interaction.reply(hidden({ content: "Pedido ou plano nao encontrado." }));
+    return;
+  }
+  order.status = status;
+  order.reviewedBy = interaction.user.id;
+  order.updatedAt = Date.now();
+  scheduleDataSave();
+  const approved = status === "aprovado";
+  await interaction.channel.send({
+    content: `<@${order.userId}>`,
+    embeds: [baseEmbed(interaction.guild)
+      .setTitle(approved ? "Pedido aprovado" : "Pedido reprovado")
+      .setDescription(approved ? plan.delivery : "Seu pagamento nao foi aprovado. Fale com a equipe para conferir os dados.")
+      .setColor(approved ? 0x00ff85 : 0xff3b5c)
+      .addFields(
+        { name: "Pedido", value: order.id, inline: true },
+        { name: "Plano", value: `${plan.name} - R$ ${plan.price}/${plan.period}`, inline: true },
+        { name: "Equipe", value: `${interaction.user}`, inline: true },
+      )],
+  });
+  await interaction.reply(hidden({ content: approved ? "Pedido aprovado." : "Pedido reprovado." }));
+  await sendAuditLog(interaction.guild, {
+    title: approved ? "Auditoria: pedido aprovado" : "Auditoria: pedido reprovado",
+    color: approved ? 0x00ff85 : 0xff3b5c,
+    fields: [
+      ["Equipe", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Cliente", `<@${order.userId}> (\`${order.userId}\`)`],
+      ["Pedido", order.id],
+      ["Plano", plan.name],
+    ],
+  });
+}
+
+async function closeShopOrder(interaction, orderId) {
+  const order = findShopOrder(interaction.guildId, orderId);
+  if (!order) {
+    await interaction.reply(hidden({ content: "Pedido nao encontrado." }));
+    return;
+  }
+  if (order.userId !== interaction.user.id && !isShopStaff(interaction.member)) {
+    await interaction.reply(hidden({ content: "Voce nao pode fechar este pedido." }));
+    return;
+  }
+  order.status = order.status === "aprovado" ? order.status : "fechado";
+  order.updatedAt = Date.now();
+  scheduleDataSave();
+  await interaction.reply(hidden({ content: "Ticket de compra sera fechado em 5 segundos." }));
+  setTimeout(() => interaction.channel?.delete(`Pedido ${orderId} fechado`).catch(() => {}), 5000);
 }
 
 async function sendCustomCentralEmbed(interaction) {
@@ -3069,6 +3315,11 @@ async function handleButton(interaction) {
     return;
   }
 
+  if (id.startsWith("order:")) {
+    await handleShopOrderButton(interaction);
+    return;
+  }
+
   if (id.startsWith("apply_staff")) {
     await interaction.showModal(staffModal(getCustomIdTarget(id), getCustomIdRole(id), getCustomIdCategory(id)));
     return;
@@ -3153,12 +3404,22 @@ async function handleUserSelect(interaction) {
 }
 
 async function handleStringSelect(interaction) {
+  if (interaction.customId === "shop:select-plan") {
+    await handleShopPlanSelect(interaction);
+    return;
+  }
+
   if (interaction.customId.startsWith("tcselect:")) {
     await startTicketModalFromSelect(interaction);
   }
 }
 
 async function handleModal(interaction) {
+  if (interaction.customId.startsWith("order:proof-modal:")) {
+    await handleShopProofModal(interaction);
+    return;
+  }
+
   if (interaction.customId.startsWith("modal_staff")) {
     await submitApplication(interaction, {
       kind: "Staff",
@@ -3393,6 +3654,61 @@ function dedupePermissionOverwrites(overwrites) {
     byId.set(overwrite.id, overwrite);
   }
   return [...byId.values()];
+}
+
+function ensureShopDefaults(store) {
+  store.shop ||= {};
+  store.shop.plans ||= defaultShopPlans();
+  store.shop.orders ||= {};
+  return store.shop;
+}
+
+function defaultShopPlans() {
+  return [
+    {
+      id: "starter",
+      name: "Starter",
+      price: "19,90",
+      period: "mensal",
+      description: "Bot simples com comandos basicos, status online e suporte inicial.",
+      features: ["1 bot Discord", "Instalacao manual", "Suporte basico", "Atualizacoes simples"],
+      delivery: "A equipe envia o bot e orienta a instalacao apos confirmar o pagamento.",
+    },
+    {
+      id: "pro",
+      name: "Pro",
+      price: "39,90",
+      period: "mensal",
+      description: "Bot de vendas, ticket ou moderacao com personalizacao da sua marca.",
+      features: ["1 bot personalizado", "Comandos slash", "Painel dentro do Discord", "Suporte prioritario"],
+      delivery: "A equipe entrega o bot configurado para o servidor do cliente.",
+    },
+    {
+      id: "ultimate",
+      name: "Ultimate",
+      price: "79,90",
+      period: "mensal",
+      description: "Plano completo para lojas que querem vender 24/7 com automacoes.",
+      features: ["Bot completo de vendas", "Sistema de tickets", "Logs e painel admin", "Customizacao completa"],
+      delivery: "A equipe entrega o bot completo e ajuda na primeira configuracao.",
+    },
+  ];
+}
+
+function findShopOrder(guildId, orderId) {
+  const store = guildData(guildId);
+  ensureShopDefaults(store);
+  return store.shop.orders[orderId] || null;
+}
+
+function isShopStaff(member) {
+  return Boolean(member?.permissions?.has(PermissionFlagsBits.ManageGuild)
+    || member?.permissions?.has(PermissionFlagsBits.ManageChannels)
+    || (normalizeSnowflake(config.staffRoleId) && member?.roles?.cache?.has(config.staffRoleId)));
+}
+
+function shortId(prefix = "id") {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
 function isRecruitmentApplicationChannel(channel, application, userId) {
@@ -5011,6 +5327,66 @@ function servicesButtons(guild) {
   );
 }
 
+function shopPanelEmbed(guild, plans, bannerUrl = "") {
+  const embed = baseEmbed(guild)
+    .setTitle(`${config.storeName} | Planos`)
+    .setDescription(plans.map((plan) => `**${plan.name}** - R$ ${plan.price}/${plan.period}\n${plan.description}`).join("\n\n") || "Nenhum plano cadastrado.")
+    .addFields({
+      name: "Como comprar",
+      value: "Escolha um plano no menu abaixo, pague via Pix e envie o comprovante no ticket privado.",
+      inline: false,
+    })
+    .setColor(0x00ff85);
+  if (bannerUrl) embed.setImage(bannerUrl);
+  return embed;
+}
+
+function shopPlanSelect(plans) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("shop:select-plan")
+      .setPlaceholder("Escolha um plano")
+      .addOptions(plans.slice(0, 25).map((plan) => ({
+        label: `${plan.name} - R$ ${plan.price}`,
+        description: String(plan.description || "Plano disponivel").slice(0, 100),
+        value: plan.id,
+      }))),
+  );
+}
+
+function shopOrderEmbed(guild, order, plan) {
+  return baseEmbed(guild)
+    .setTitle(`Pedido ${order.id}`)
+    .setDescription([
+      `Cliente: <@${order.userId}>`,
+      `Plano: **${plan.name}**`,
+      `Valor: **R$ ${plan.price}/${plan.period}**`,
+      "",
+      "**Pix:**",
+      `\`${config.pixKey}\``,
+      "",
+      "Depois de pagar, clique em **Enviar comprovante**.",
+    ].join("\n"))
+    .addFields(
+      { name: "Inclui", value: (plan.features || []).map((item) => `• ${item}`).join("\n") || "Nao informado", inline: false },
+      { name: "Entrega", value: plan.delivery || "A equipe entrega apos confirmar o pagamento.", inline: false },
+    )
+    .setColor(0x7b2cff);
+}
+
+function shopPaymentRows(orderId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`order:proof:${orderId}`).setLabel("Enviar comprovante").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`order:close:${orderId}`).setLabel("Fechar ticket").setStyle(ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`order:approve:${orderId}`).setLabel("Aprovar").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`order:reject:${orderId}`).setLabel("Reprovar").setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
 function verificationEmbed(guild, role, link, imageUrl) {
   const embed = baseEmbed(guild)
     .setTitle("Verificacao do servidor")
@@ -5282,6 +5658,9 @@ function guildData(guildId) {
   store.automod.windowMinutes ||= 60;
   store.automod.deleteMessageDays ??= 0;
   store.automod.infractions ||= {};
+  store.shop ||= {};
+  store.shop.plans ||= defaultShopPlans();
+  store.shop.orders ||= {};
   store.goals ||= {};
   store.presences ||= {};
   store.shifts ||= {};
