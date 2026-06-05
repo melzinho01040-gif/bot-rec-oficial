@@ -5374,20 +5374,33 @@ async function punishBadWord(message, badWord) {
 }
 
 function findBadWord(content) {
-  const normalized = stripAccents(String(content || "").toLowerCase())
-    .replace(/[@#$%¨&*()_+=|\\{}\[\]:;"'<>,.?/~-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const normalized = normalizeBadWordText(content);
   if (!normalized) return "";
+  const compact = normalized.replace(/\s+/g, "");
   for (const word of config.badWords) {
-    const clean = stripAccents(String(word || "").toLowerCase()).trim();
+    const clean = normalizeBadWordText(word);
     if (!clean) continue;
+    const cleanCompact = clean.replace(/\s+/g, "");
     const pattern = new RegExp(`(^|\\s)${escapeRegExp(clean).replace(/\\ /g, "\\s+")}(\\s|$)`, "i");
     if (pattern.test(normalized)) return clean;
+    if (cleanCompact.length >= 4 && compact.includes(cleanCompact)) return clean;
   }
   return "";
 }
 
+function normalizeBadWordText(value) {
+  return stripAccents(String(value || "").toLowerCase())
+    .replace(/[4@]/g, "a")
+    .replace(/3/g, "e")
+    .replace(/[1!|]/g, "i")
+    .replace(/0/g, "o")
+    .replace(/[5$]/g, "s")
+    .replace(/7/g, "t")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/([a-z])\1{1,}/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 function trackMessageXp(message) {
   if (!message.guildId || message.author?.bot) return;
 
