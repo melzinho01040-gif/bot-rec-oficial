@@ -4885,7 +4885,7 @@ function stockButtons(guild) {
 function staffModal(targetChannelId = "default", approvedRoleId = "none") {
   return new ModalBuilder()
     .setCustomId(`modal_staff:${targetChannelId || "default"}:${normalizeSnowflake(approvedRoleId) || "none"}`)
-    .setTitle("🛡️ Aplicacao para Staff")
+    .setTitle("Aplicacao para Staff")
     .addComponents(
       textInput("staff_time", "Quanto tempo online voce tem disponivel?", "Ex.: 4h por dia, geralmente das 19h as 23h.", TextInputStyle.Paragraph),
       textInput("staff_experience", "Ja teve experiencia de staff?", "Ex.: moderador em servidor X por 6 meses.", TextInputStyle.Paragraph),
@@ -6649,11 +6649,34 @@ function parseActivityList(raw) {
 
 function parseBadWords(raw) {
   const defaults = [
+    "boquete",
     "fdp",
     "porra",
+    "porra nenhuma",
+    "que porra e essa",
     "caralho",
+    "do caralho",
+    "pra caralho",
     "merda",
+    "puta merda",
+    "puta que pariu",
+    "foda",
+    "foda se",
+    "foder",
+    "nem fodendo",
     "vai se fuder",
+    "pau",
+    "pica",
+    "punheta",
+    "teu cu",
+    "olho do cu",
+    "buceta",
+    "xoxota",
+    "sacanagem",
+    "cacete",
+    "caceta",
+    "siririca",
+    "trepar",
     "arrombado",
     "desgracado",
     "desgraçado",
