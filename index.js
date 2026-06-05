@@ -368,6 +368,38 @@ const commands = [
         .setDescription("Mostra o canal de logs configurado."),
     ),
   new SlashCommandBuilder()
+    .setName("automod")
+    .setDescription("Configura mute e auto-ban por palavras bloqueadas.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("setup")
+        .setDescription("Define punições do automod.")
+        .addIntegerOption((option) =>
+          option.setName("mute_minutos").setDescription("Tempo de mute por palavrao").setMinValue(1).setMaxValue(40320).setRequired(true),
+        )
+        .addBooleanOption((option) =>
+          option.setName("auto_ban").setDescription("Ativar ban automatico por reincidencia").setRequired(true),
+        )
+        .addIntegerOption((option) =>
+          option.setName("limite_ban").setDescription("Quantos palavraoes ate banir").setMinValue(2).setMaxValue(100).setRequired(false),
+        )
+        .addIntegerOption((option) =>
+          option.setName("periodo_minutos").setDescription("Janela de tempo para contar reincidencia").setMinValue(1).setMaxValue(10080).setRequired(false),
+        )
+        .addIntegerOption((option) =>
+          option.setName("apagar_dias").setDescription("Dias de mensagens apagadas no ban, 0 a 7").setMinValue(0).setMaxValue(7).setRequired(false),
+        )
+        .addChannelOption((option) =>
+          option.setName("canal_painel").setDescription("Canal para enviar o painel do automod").addChannelTypes(ChannelType.GuildText).setRequired(false),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("status")
+        .setDescription("Mostra o painel atual do automod."),
+    ),
+  new SlashCommandBuilder()
     .setName("regras")
     .setDescription("Cria uma embed bonita com as regras da crew.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -1207,6 +1239,11 @@ async function handleCommand(interaction) {
     return;
   }
 
+  if (command === "automod") {
+    await handleAutomodCommand(interaction);
+    return;
+  }
+
   if (command === "regras") {
     await handleRulesCommand(interaction);
     return;
@@ -1436,8 +1473,14 @@ async function handleCommand(interaction) {
     const minutes = interaction.options.getInteger("minutos", true);
     const reason = interaction.options.getString("motivo") || "Sem motivo informado";
     const member = await interaction.guild.members.fetch(user.id);
-    await member.timeout(minutes * 60 * 1000, reason);
-    await interaction.reply({ embeds: [baseEmbed().setTitle("Usuario mutado").setDescription(`${member} recebeu timeout por ${minutes} minuto(s).\nMotivo: ${reason}`)] });
+    const result = await applyMemberTimeout(member, minutes * 60 * 1000, reason);
+    await interaction.reply({
+      embeds: [baseEmbed(interaction.guild)
+        .setTitle(result.ok ? "Usuario mutado" : "Nao consegui mutar")
+        .setDescription(result.ok
+          ? `${member} recebeu timeout por ${minutes} minuto(s).\nMotivo: ${reason}`
+          : `${member} nao recebeu timeout.\nMotivo: ${result.message}`)],
+    });
     return;
   }
 
@@ -1691,6 +1734,50 @@ async function handleLogsCommand(interaction) {
       .setColor(0x7b2cff)],
   });
   await interaction.reply(hidden({ content: `Logs configurados em ${channel}.` }));
+}
+
+async function handleAutomodCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  const store = guildData(interaction.guildId);
+
+  if (sub === "status") {
+    await interaction.reply(hidden({ embeds: [automodPanelEmbed(interaction.guild, store.automod)] }));
+    return;
+  }
+
+  const panelChannel = interaction.options.getChannel("canal_painel", false);
+  if (panelChannel && !(await ensurePanelTarget(interaction, panelChannel))) return;
+
+  store.automod.muteMinutes = interaction.options.getInteger("mute_minutos", true);
+  store.automod.autoBanEnabled = interaction.options.getBoolean("auto_ban", true);
+  store.automod.banThreshold = interaction.options.getInteger("limite_ban", false) || store.automod.banThreshold || 50;
+  store.automod.windowMinutes = interaction.options.getInteger("periodo_minutos", false) || store.automod.windowMinutes || 60;
+  store.automod.deleteMessageDays = interaction.options.getInteger("apagar_dias", false) ?? store.automod.deleteMessageDays ?? 0;
+  scheduleDataSave();
+
+  const embed = automodPanelEmbed(interaction.guild, store.automod);
+  if (panelChannel) {
+    await panelChannel.send({ embeds: [embed] });
+  }
+  await interaction.reply(hidden({
+    embeds: [embed],
+    content: panelChannel ? `Painel do automod enviado em ${panelChannel}.` : "Automod configurado.",
+  }));
+}
+
+function automodPanelEmbed(guild, settings) {
+  return baseEmbed(guild)
+    .setTitle("Painel do AutoMod")
+    .setDescription("Configuracao atual para palavras bloqueadas e reincidencia.")
+    .addFields(
+      { name: "Mute por palavrao", value: `${settings.muteMinutes || 1} minuto(s)`, inline: true },
+      { name: "Auto-ban", value: settings.autoBanEnabled ? "Ativado" : "Desativado", inline: true },
+      { name: "Limite para ban", value: `${settings.banThreshold || 50} infrações`, inline: true },
+      { name: "Janela de reincidencia", value: `${settings.windowMinutes || 60} minuto(s)`, inline: true },
+      { name: "Apagar mensagens no ban", value: `${settings.deleteMessageDays || 0} dia(s)`, inline: true },
+      { name: "Logs", value: "Use `/logs setup` para escolher onde chegam mutes, bans e mensagens apagadas/editadas.", inline: false },
+    )
+    .setColor(0xff3b5c);
 }
 
 async function handleRulesCommand(interaction) {
@@ -5188,6 +5275,13 @@ function guildData(guildId) {
   store.strikes ||= {};
   store.welcome ||= {};
   store.verification ||= {};
+  store.automod ||= {};
+  store.automod.muteMinutes ||= 1;
+  store.automod.autoBanEnabled ??= false;
+  store.automod.banThreshold ||= 50;
+  store.automod.windowMinutes ||= 60;
+  store.automod.deleteMessageDays ??= 0;
+  store.automod.infractions ||= {};
   store.goals ||= {};
   store.presences ||= {};
   store.shifts ||= {};
@@ -5345,32 +5439,82 @@ async function guardMessage(message) {
 async function punishBadWord(message, badWord) {
   const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
   const botMember = await message.guild.members.fetchMe().catch(() => null);
-  const key = `${message.guildId}:${message.author.id}`;
+  const store = guildData(message.guildId);
+  const settings = store.automod;
+  const windowMs = Math.max(1, settings.windowMinutes || 60) * 60 * 1000;
   const now = Date.now();
-  if ((automodMuteCooldowns.get(key) || 0) > now) {
+  const cooldownKey = `${message.guildId}:${message.author.id}`;
+  if ((automodMuteCooldowns.get(cooldownKey) || 0) > now) {
     await message.delete().catch(() => {});
     return;
   }
-  automodMuteCooldowns.set(key, now + 60 * 1000);
+  automodMuteCooldowns.set(cooldownKey, now + 2500);
+  settings.infractions[message.author.id] = (settings.infractions[message.author.id] || []).filter((time) => now - time <= windowMs);
+  settings.infractions[message.author.id].push(now);
+  const infractionCount = settings.infractions[message.author.id].length;
+  scheduleDataSave();
+
   await message.delete().catch(() => {});
-  const canTimeout = member?.moderatable && botMember?.permissions?.has(PermissionFlagsBits.ModerateMembers);
-  if (canTimeout) {
-    await member.timeout(60 * 1000, `AutoMod: palavra bloqueada (${badWord})`).catch(() => {});
+  const shouldBan = Boolean(settings.autoBanEnabled) && infractionCount >= Math.max(2, settings.banThreshold || 50);
+  const canBan = shouldBan && member?.bannable && botMember?.permissions?.has(PermissionFlagsBits.BanMembers);
+  let punishment = "";
+  let banned = false;
+
+  if (canBan) {
+    const deleteMessageSeconds = clamp(Number(settings.deleteMessageDays || 0), 0, 7) * 24 * 60 * 60;
+    banned = await member.ban({
+      reason: `AutoMod: ${infractionCount} palavras bloqueadas em ${settings.windowMinutes || 60} min`,
+      deleteMessageSeconds,
+    }).then(() => true).catch(() => false);
   }
-  const punishment = canTimeout
-    ? "Timeout de 1 minuto"
-    : "Mensagem apagada; nao consegui aplicar timeout. Confira se meu cargo esta acima do cargo da pessoa e se tenho Moderar membros.";
+
+  if (banned) {
+    punishment = `Ban automatico (${infractionCount}/${settings.banThreshold || 50} infrações)`;
+  } else {
+    const muteMs = Math.max(1, settings.muteMinutes || 1) * 60 * 1000;
+    const timeoutResult = await applyMemberTimeout(member, muteMs, `AutoMod: palavra bloqueada (${badWord})`, botMember);
+    punishment = timeoutResult.ok
+      ? `Timeout de ${settings.muteMinutes || 1} minuto(s)`
+      : `Mensagem apagada; nao consegui aplicar timeout. ${timeoutResult.message}`;
+    if (shouldBan && !canBan) {
+      punishment += "\nAuto-ban deveria acontecer, mas nao consegui banir. Confira permissao Banir membros e hierarquia do cargo.";
+    }
+  }
+
   await sendAuditLog(message.guild, {
-    title: "Auditoria: automod mute",
+    title: banned ? "Auditoria: automod ban" : "Auditoria: automod mute",
     color: 0xff3b5c,
     fields: [
       ["Usuario", `${message.author} (\`${message.author.id}\`)`],
       ["Canal", `${message.channel}`],
       ["Punicao", punishment],
+      ["Infrações", `${infractionCount}/${settings.banThreshold || 50} em ${settings.windowMinutes || 60} min`],
       ["Motivo", "Palavra ofensiva bloqueada"],
       ["Conteudo", safeField(message.content)],
     ],
   });
+}
+
+async function applyMemberTimeout(member, durationMs, reason, botMember = null) {
+  if (!member) return { ok: false, message: "Membro nao encontrado no servidor." };
+  if (member.user?.bot) return { ok: false, message: "Nao aplico timeout em bots." };
+  if (member.id === member.guild.ownerId) return { ok: false, message: "O dono do servidor nao pode receber timeout pelo Discord." };
+
+  const me = botMember || await member.guild.members.fetchMe().catch(() => null);
+  if (!me?.permissions?.has(PermissionFlagsBits.ModerateMembers)) {
+    return { ok: false, message: "Falta a permissao Moderar membros no cargo do bot." };
+  }
+  if (!member.moderatable) {
+    return { ok: false, message: "O cargo do bot precisa ficar acima do cargo da pessoa. Pessoas com cargo maior/igual nao podem ser mutadas." };
+  }
+
+  const safeDuration = clamp(Number(durationMs || 0), 60 * 1000, 28 * 24 * 60 * 60 * 1000);
+  try {
+    await member.timeout(safeDuration, reason);
+    return { ok: true, message: "Timeout aplicado." };
+  } catch (error) {
+    return { ok: false, message: `Erro do Discord: ${error.message}` };
+  }
 }
 
 function findBadWord(content) {
