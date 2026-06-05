@@ -351,6 +351,23 @@ const commands = [
         ),
     ),
   new SlashCommandBuilder()
+    .setName("logs")
+    .setDescription("Configura logs gerais do bot.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("setup")
+        .setDescription("Define o canal de logs gerais.")
+        .addChannelOption((option) =>
+          option.setName("canal").setDescription("Canal de logs").addChannelTypes(ChannelType.GuildText).setRequired(true),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("status")
+        .setDescription("Mostra o canal de logs configurado."),
+    ),
+  new SlashCommandBuilder()
     .setName("regras")
     .setDescription("Cria uma embed bonita com as regras da crew.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -1185,6 +1202,11 @@ async function handleCommand(interaction) {
     return;
   }
 
+  if (command === "logs") {
+    await handleLogsCommand(interaction);
+    return;
+  }
+
   if (command === "regras") {
     await handleRulesCommand(interaction);
     return;
@@ -1632,6 +1654,43 @@ async function handleAuditCommand(interaction) {
       .setFooter({ text: `${config.brandName} • Auditoria • ${formatDateTime()}` })],
   });
   await interaction.reply(hidden({ content: `Auditoria configurada em ${channel}.` }));
+}
+
+async function handleLogsCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  const store = guildData(interaction.guildId);
+  if (sub === "status") {
+    const channel = await resolveChannel(interaction.guild, store.auditLogChannelId || config.auditLogChannelId);
+    await interaction.reply(hidden({
+      embeds: [baseEmbed(interaction.guild)
+        .setTitle("Status dos logs")
+        .setDescription(channel ? `Canal atual: ${channel}` : "Nenhum canal de logs foi configurado ainda.")
+        .addFields({
+          name: "Eventos registrados",
+          value: "Automod/mute por xingamento\nMensagem apagada/editada\nTickets\nRecrutamento/aprovacoes\nEventos, torneios e PVP",
+          inline: false,
+        })],
+    }));
+    return;
+  }
+
+  const channel = interaction.options.getChannel("canal", true);
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+  store.auditLogChannelId = channel.id;
+  scheduleDataSave();
+
+  await channel.send({
+    embeds: [baseEmbed(interaction.guild)
+      .setTitle("Logs ativados")
+      .setDescription([
+        `Responsavel: ${interaction.user}`,
+        `Canal: ${channel}`,
+        "",
+        "A partir de agora este canal recebe automod, mutes por xingamento, mensagens apagadas/editadas, tickets, recrutamento e auditorias gerais.",
+      ].join("\n"))
+      .setColor(0x7b2cff)],
+  });
+  await interaction.reply(hidden({ content: `Logs configurados em ${channel}.` }));
 }
 
 async function handleRulesCommand(interaction) {
