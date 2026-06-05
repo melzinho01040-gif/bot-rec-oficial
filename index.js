@@ -5310,7 +5310,7 @@ function xpForLevel(level) {
 async function guardMessage(message) {
   if (!message.guild || message.author?.bot || !message.content) return;
   const member = message.member;
-  if (member?.permissions?.has(PermissionFlagsBits.ManageMessages)) return;
+  if (message.author.id === message.guild.ownerId) return;
 
   const content = message.content;
   const badWord = findBadWord(content);
@@ -5357,13 +5357,16 @@ async function punishBadWord(message, badWord) {
   if (canTimeout) {
     await member.timeout(60 * 1000, `AutoMod: palavra bloqueada (${badWord})`).catch(() => {});
   }
+  const punishment = canTimeout
+    ? "Timeout de 1 minuto"
+    : "Mensagem apagada; nao consegui aplicar timeout. Confira se meu cargo esta acima do cargo da pessoa e se tenho Moderar membros.";
   await sendAuditLog(message.guild, {
     title: "Auditoria: automod mute",
     color: 0xff3b5c,
     fields: [
       ["Usuario", `${message.author} (\`${message.author.id}\`)`],
       ["Canal", `${message.channel}`],
-      ["Punicao", canTimeout ? "Timeout de 1 minuto" : "Mensagem apagada; sem permissao para timeout"],
+      ["Punicao", punishment],
       ["Motivo", "Palavra ofensiva bloqueada"],
       ["Conteudo", safeField(message.content)],
     ],
