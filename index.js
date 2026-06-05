@@ -2621,7 +2621,9 @@ async function handleComboCommand(interaction) {
       { name: "Build", value: `Fruta: **${build.fruit}**\nEstilo: **${build.style}**\nEspada: **${build.sword}**\nArma: **${build.gun}**`, inline: true },
       { name: "Objetivo", value: combo.goalLabel, inline: true },
       { name: "Dificuldade", value: combo.difficulty, inline: true },
+      ...(combo.warning ? [{ name: "Aviso da build", value: combo.warning, inline: false }] : []),
       { name: "Ajustes", value: combo.tips.join("\n"), inline: false },
+      { name: "Base", value: "[Blox Fruits Wiki - Combos](https://blox-fruits.fandom.com/wiki/Combos)", inline: false },
     )
     .setFooter({ text: `${config.brandName} | Combo gerado automaticamente` });
 
@@ -2640,145 +2642,172 @@ function buildComboPlan(build) {
   const sword = comboSwordProfile(swordKey, build.sword);
   const gun = comboGunProfile(gunKey, build.gun);
   const goal = comboGoalProfile(build.goal);
-  const preset = comboPreset(fruitKey, styleKey, swordKey, gunKey);
-
-  const sequence = preset || [
-    `${gun.breaker} para gastar/quebrar Instinct antes do combo real.`,
-    `${fruit.stun} para confirmar stun. Se errar, nao force o resto.`,
-    `${sword.pull || style.gap} para puxar/alinha o alvo.`,
-    `${style.damage} para encaixar dano enquanto o alvo esta preso.`,
-    `${sword.damage} como burst principal.`,
-    `${fruit.finish} ou ${gun.finish} para finalizar e sair do trade.`,
-  ];
+  const preset = comboPreset({ fruitKey, styleKey, swordKey, gunKey, fruit, style, sword, gun, goal });
+  const sequence = preset?.sequence || comboGenericRoute({ fruit, style, sword, gun, goal });
 
   return {
     title: `${build.fruit} + ${build.style}`,
     goalLabel: goal.label,
-    difficulty: comboDifficulty(fruit, style, sword, gun, goal),
+    difficulty: preset?.difficulty || comboDifficulty(fruit, style, sword, gun, goal),
     sequence,
+    warning: preset?.warning || comboBuildWarning(fruit, style, sword, gun),
     tips: [
-      "Regra base: quebre Instinct/Ken primeiro, depois stun, pull, dano e finisher.",
+      "Ordem certa: gastar Instinct/Ken, confirmar stun, puxar/alinha, burst, finisher.",
       goal.tip,
-      fruit.tip,
-      `${style.name}: ${style.tip}`,
-      `${sword.name}: ${sword.tip}`,
-      `${gun.name}: ${gun.tip}`,
-      "Com ping alto, corte uma etapa e use uma rota mais curta.",
+      `Fruta: ${fruit.tip}`,
+      `Estilo: ${style.tip}`,
+      `Espada: ${sword.tip}`,
+      `Arma: ${gun.tip}`,
+      "Se errar a primeira confirmacao, reseta em vez de gastar o combo todo.",
     ],
   };
 }
 
 function comboGoalProfile(goal) {
   const profiles = {
-    bounty: { id: "bounty", label: "Bounty Hunt", tip: "Priorize iniciar de surpresa e sair rapido depois do kill." },
-    oneshot: { id: "oneshot", label: "One Shot", tip: "Use tudo depois de confirmar stun; se errar o inicio, reseta." },
-    control: { id: "control", label: "Controle", tip: "Segure cooldowns e jogue mais pelo stun do que por dano bruto." },
-    pvp: { id: "pvp", label: "PVP", tip: "Nao gaste todos os cooldowns se o alvo ainda tiver mobilidade." },
+    bounty: { id: "bounty", label: "Bounty Hunt", tip: "Priorize rota curta, surpresa e saida rapida depois do kill." },
+    oneshot: { id: "oneshot", label: "One Shot", tip: "So solta tudo depois de stun confirmado; se o inicio falhar, recua." },
+    control: { id: "control", label: "Controle", tip: "Guarde um stun/escape para o contra-ataque, nao use tudo de uma vez." },
+    pvp: { id: "pvp", label: "PVP", tip: "Jogue por confirmacao; nao comece combo seco contra Instinct ativo." },
   };
   return profiles[goal] || profiles.pvp;
 }
 
 function comboFruitProfile(key) {
   const profiles = [
-    [["dough"], "Dough", "Dough V ou X", "Dough C/V", "Dough e forte quando o stun ja foi confirmado; nao abra seco contra Instinct ativo."],
-    [["portal"], "Portal", "Portal Z", "Portal V para reposicionar ou resetar", "Portal depende de espada/estilo para dano; use mobilidade para punir erro."],
-    [["kitsune"], "Kitsune", "Kitsune C ou X", "Kitsune Z/F para chase", "Use mobilidade para baitar Instinct antes do combo real."],
-    [["dragon"], "Dragon", "Dragon X/Z", "Dragon C/V", "Confirme stun antes de gastar movimentos longos."],
-    [["leopard"], "Leopard", "Leopard Z/X", "Leopard C/F", "Pressione com mobilidade e finalize rapido."],
-    [["rumble", "lightning"], "Rumble", "Rumble X", "Rumble V", "Rumble joga muito por stun e confirma bem espada/pull."],
-    [["ice"], "Ice", "Ice V", "Ice C + espada", "Freeze e sua janela principal; se errar, recue."],
-    [["dark"], "Dark", "Dark C/X", "Dark V", "Dark depende de controle; jogue paciente e confirme pull."],
-    [["shadow"], "Shadow", "Shadow Z/X", "Shadow V/C", "Boa pressao de medio alcance; finalize depois do escape inimigo."],
-    [["venom"], "Venom", "Venom X", "Venom C/F", "Use puddle/dano continuo depois do stun."],
-    [["magma"], "Magma", "Magma X/Z", "Magma V/C", "Magma recompensa alvo preso em area de dano."],
-    [["spirit"], "Spirit", "Spirit Z/C", "Spirit V", "Use pressao para forcar movimento antes do stun."],
-    [["light"], "Light", "Light X/Z", "Light V/C", "Entre e saia rapido antes do contra-combo."],
+    { keys: ["dough"], name: "Dough", confirm: "Dough V ou Dough X", extender: "Dough C", finisher: "Dough Z/C", role: "stun", tip: "Dough brilha depois de Instinct quebrado; use V/X para prender antes do burst." },
+    { keys: ["portal"], name: "Portal", confirm: "Portal Z", extender: "Portal V apenas para reset/reposicionar", finisher: "Espada/estilo para dano", role: "mobility", tip: "Portal nao e dano principal; use mobilidade para punir e saia do trade." },
+    { keys: ["kitsune"], name: "Kitsune", confirm: "Kitsune C ou X", extender: "Kitsune Z", finisher: "Kitsune chase/F", role: "pressure", tip: "Baita Instinct com movimento e confirme com arma/espada antes de gastar tudo." },
+    { keys: ["dragon"], name: "Dragon", confirm: "Dragon X/Z", extender: "Dragon C", finisher: "Dragon V/C", role: "heavy", tip: "Movimentos longos precisam de stun antes; nao abra seco." },
+    { keys: ["leopard"], name: "Leopard", confirm: "Leopard Z/X", extender: "Leopard C", finisher: "Leopard F/C", role: "pressure", tip: "Use rota curta e pressao; nao dependa de combo longo." },
+    { keys: ["rumble", "lightning"], name: "Rumble", confirm: "Rumble X", extender: "Rumble V", finisher: "Rumble Z/C", role: "stun", tip: "Rumble confirma muito bem pull de espada, principalmente depois de Instinct break." },
+    { keys: ["ice"], name: "Ice", confirm: "Ice V", extender: "Ice C", finisher: "Ice Z ou espada", role: "freeze", tip: "Freeze e a janela principal; se errar V, nao force." },
+    { keys: ["dark"], name: "Dark", confirm: "Dark C", extender: "Dark X", finisher: "Dark V", role: "stun", tip: "Dark e controle; confirme pull e jogue paciente." },
+    { keys: ["shadow"], name: "Shadow", confirm: "Shadow Z/X", extender: "Shadow C", finisher: "Shadow V", role: "pressure", tip: "Boa pressao de medio alcance; finalize depois do escape inimigo." },
+    { keys: ["venom"], name: "Venom", confirm: "Venom X", extender: "Venom Z/C", finisher: "Venom F/C", role: "dot", tip: "Use dano continuo quando o alvo ja estiver preso ou puxado." },
+    { keys: ["magma"], name: "Magma", confirm: "Magma X", extender: "Magma Z", finisher: "Magma V/C", role: "area", tip: "Magma precisa prender o alvo em area de dano." },
+    { keys: ["spirit"], name: "Spirit", confirm: "Spirit Z/C", extender: "Spirit X", finisher: "Spirit V", role: "pressure", tip: "Use pressao para forcar movimento antes do stun." },
+    { keys: ["light"], name: "Light", confirm: "Light X/Z", extender: "Light C", finisher: "Light V", role: "mobility", tip: "Entre e saia rapido; combo longo deixa voce aberto." },
+    { keys: ["buddha"], name: "Buddha", confirm: "Stun da espada/arma", extender: "M1 + estilo", finisher: "Pressao/M1", role: "m1", tip: "Buddha nao e fruta de combo bonito; use alcance, M1 e defesa." },
   ];
-  const found = profiles.find(([keys]) => keys.some((item) => key.includes(item)));
-  if (found) return { name: found[1], stun: found[2], finish: found[3], tip: found[4] };
-  return { name: "Fruta", stun: `${foundMoveName(key, "Fruta")} skill de stun`, finish: `${foundMoveName(key, "Fruta")} finisher`, tip: "Use primeiro o movimento que prende ou força Instinct." };
+  const found = profiles.find((profile) => profile.keys.some((item) => key.includes(item)));
+  return found || { name: cleanFruitName(key) || "Fruta", confirm: "melhor stun da fruta", extender: "segundo stun da fruta", finisher: "finisher da fruta", role: "generic", tip: "Use a skill que prende antes das skills de dano." };
 }
 
 function comboStyleProfile(key, fallback) {
   const profiles = [
-    [["godhuman"], "Godhuman", "Godhuman C", "Godhuman Z + X", "Muito bom depois de stun curto; C ajuda a conectar."],
-    [["sanguineart", "sanguine"], "Sanguine Art", "Sanguine C", "Sanguine Z + X", "Forte em pressao curta e chase."],
-    [["electricclaw", "eclaw"], "Electric Claw", "Electric Claw C", "Electric Claw Z + X", "Rapido para bounty hunt e punish."],
-    [["sharkmankarate", "sharkman"], "Sharkman Karate", "Sharkman X", "Sharkman C + Z", "Consistente quando o alvo esta preso."],
-    [["dragontalon"], "Dragon Talon", "Dragon Talon X", "Dragon Talon C + Z", "Dano alto, mas exige confirmar bem."],
-    [["deathstep"], "Death Step", "Death Step C", "Death Step Z + X", "Use depois de stun, nao como abertura."],
-    [["superhuman"], "Superhuman", "Superhuman Z", "Superhuman C + X", "Classico para combos curtos."],
+    { keys: ["godhuman"], name: "Godhuman", confirm: "Godhuman C", burst: "Godhuman Z + X", finisher: "Godhuman X/Z", tip: "Muito forte depois de stun curto; C conecta bem com pull." },
+    { keys: ["sanguineart", "sanguine"], name: "Sanguine Art", confirm: "Sanguine C", burst: "Sanguine Z + X", finisher: "Sanguine X", tip: "Bom para chase e pressao curta." },
+    { keys: ["electricclaw", "eclaw"], name: "Electric Claw", confirm: "Electric Claw C", burst: "Electric Claw Z + X", finisher: "Electric Claw X", tip: "Rapido para bounty hunt e punish." },
+    { keys: ["sharkmankarate", "sharkman"], name: "Sharkman Karate", confirm: "Sharkman X", burst: "Sharkman C + Z", finisher: "Sharkman Z", tip: "Consistente quando o alvo ja esta preso." },
+    { keys: ["dragontalon"], name: "Dragon Talon", confirm: "Dragon Talon X", burst: "Dragon Talon C + Z", finisher: "Dragon Talon Z", tip: "Dano alto, mas exige confirmacao boa." },
+    { keys: ["deathstep"], name: "Death Step", confirm: "Death Step C", burst: "Death Step Z + X", finisher: "Death Step X", tip: "Use depois de stun; nao e boa abertura seca." },
+    { keys: ["superhuman"], name: "Superhuman", confirm: "Superhuman Z", burst: "Superhuman C + X", finisher: "Superhuman X", tip: "Classico para rota curta." },
   ];
-  const found = profiles.find(([keys]) => keys.some((item) => key.includes(item)));
-  if (found) return { name: found[1], gap: found[2], damage: found[3], tip: found[4] };
-  return { name: fallback, gap: `${fallback} skill de aproximacao`, damage: `${fallback} dano principal`, tip: "Use o golpe mais rapido logo depois do stun." };
+  const found = profiles.find((profile) => profile.keys.some((item) => key.includes(item)));
+  return found || { name: fallback, confirm: `${fallback} golpe mais rapido`, burst: `${fallback} dano principal`, finisher: `${fallback} finisher`, tip: "Use logo depois de stun confirmado." };
 }
 
 function comboGunProfile(key, fallback) {
   const profiles = [
-    [["soulguitar", "skullguitar"], "Soul Guitar", "Soul Guitar X", "Soul Guitar Z", "X e uma abertura forte para stun/Instinct break."],
-    [["kabucha"], "Kabucha", "Kabucha X", "Kabucha Z", "Use X para quebrar Instinct ou empurrar para confirmar."],
-    [["acidumrifle"], "Acidum Rifle", "Acidum Rifle Z", "Acidum Rifle X", "Boa para iniciar e manter pressao."],
-    [["serpentsbow"], "Serpent Bow", "Serpent Bow Z", "Serpent Bow X", "Controle de distancia."],
-    [["dragonstorm"], "Dragonstorm", "Dragonstorm Z", "Dragonstorm X", "Use como dano/pressao, nao como stun principal."],
+    { keys: ["soulguitar", "skullguitar"], name: "Skull Guitar", breaker: "Skull Guitar X", extender: "Skull Guitar Z", finisher: "Skull Guitar Z", tip: "X e abertura forte para stun/Instinct break." },
+    { keys: ["kabucha"], name: "Kabucha", breaker: "Kabucha X", extender: "Kabucha Z", finisher: "Kabucha Z", tip: "X e bom para quebrar Instinct ou empurrar para confirmar." },
+    { keys: ["acidumrifle"], name: "Acidum Rifle", breaker: "Acidum Rifle Z", extender: "Acidum Rifle X", finisher: "Acidum Rifle X", tip: "Boa para iniciar e manter pressao." },
+    { keys: ["serpentbow", "serpentsbow"], name: "Serpent Bow", breaker: "Serpent Bow Z", extender: "Serpent Bow X", finisher: "Serpent Bow X", tip: "Controle de distancia e poke." },
+    { keys: ["dragonstorm"], name: "Dragonstorm", breaker: "Dragonstorm Z", extender: "Dragonstorm X", finisher: "Dragonstorm X", tip: "Use como dano/pressao, nao como stun principal." },
   ];
-  const found = profiles.find(([keys]) => keys.some((item) => key.includes(item)));
-  if (found) return { name: found[1], breaker: found[2], finish: found[3], tip: found[4] };
-  return { name: fallback, breaker: `${fallback} skill de abertura`, finish: `${fallback} skill final`, tip: "Use para quebrar Instinct ou segurar distancia." };
+  const found = profiles.find((profile) => profile.keys.some((item) => key.includes(item)));
+  return found || { name: fallback, breaker: `${fallback} melhor stun/tiro`, extender: `${fallback} segundo tiro`, finisher: `${fallback} finisher`, tip: "Use para gastar Instinct ou confirmar de longe." };
 }
 
 function comboSwordProfile(key, fallback) {
   const profiles = [
-    [["curseddualkatana", "cdk"], "Cursed Dual Katana", "CDK Z", "CDK X", "CDK X/Z dao burst pesado depois do stun."],
-    [["spikeytrident"], "Spikey Trident", "Spikey Trident X", "Spikey Trident Z", "Spikey X e pull forte para alinhar combo."],
-    [["sharkanchor"], "Shark Anchor", "Shark Anchor X", "Shark Anchor Z", "Bom pull/dano, melhor depois de stun."],
-    [["dragontrident"], "Dragon Trident", "Dragon Trident X", "Dragon Trident Z", "Controle em area para manter o alvo preso."],
-    [["tushita"], "Tushita", "Tushita X", "Tushita Z", "Mobilidade e dano rapido."],
-    [["yama"], "Yama", "Yama X", "Yama Z", "Bom chase para finalizar."],
-    [["darkblade", "yoru"], "Dark Blade", "Dark Blade X", "Dark Blade Z", "Dano direto; confirme antes de usar."],
-    [["hollowscythe"], "Hallow Scythe", "Hallow Scythe Z", "Hallow Scythe X", "Bom para manter pressao."],
+    { keys: ["curseddualkatana", "cdk"], name: "Cursed Dual Katana", pull: "CDK Z", burst: "CDK X", finisher: "CDK X", tip: "Burst pesado depois do stun; Z ajuda a encaixar." },
+    { keys: ["spikeytrident"], name: "Spikey Trident", pull: "Spikey Trident X", burst: "Spikey Trident Z", finisher: "Spikey Trident Z", tip: "X e um dos melhores pulls para alinhar combo." },
+    { keys: ["sharkanchor"], name: "Shark Anchor", pull: "Shark Anchor X", burst: "Shark Anchor Z", finisher: "Shark Anchor Z", tip: "Bom pull/dano, melhor depois de stun." },
+    { keys: ["dragontrident"], name: "Dragon Trident", pull: "Dragon Trident X", burst: "Dragon Trident Z", finisher: "Dragon Trident Z", tip: "Controle em area para manter alvo preso." },
+    { keys: ["tushita"], name: "Tushita", pull: "Tushita X", burst: "Tushita Z", finisher: "Tushita Z", tip: "Mobilidade e dano rapido." },
+    { keys: ["yama"], name: "Yama", pull: "Yama X", burst: "Yama Z", finisher: "Yama Z", tip: "Bom chase para finalizar." },
+    { keys: ["darkblade", "yoru"], name: "Dark Blade", pull: "Dark Blade X", burst: "Dark Blade Z", finisher: "Dark Blade Z", tip: "Dano direto; confirme antes de usar." },
+    { keys: ["hallowscythe", "hollowscythe"], name: "Hallow Scythe", pull: "Hallow Scythe Z", burst: "Hallow Scythe X", finisher: "Hallow Scythe X", tip: "Bom para manter pressao." },
+    { keys: ["foxlamp"], name: "Fox Lamp", pull: "Fox Lamp X", burst: "Fox Lamp Z", finisher: "Fox Lamp Z", tip: "Combina com chase/mobilidade." },
   ];
-  const found = profiles.find(([keys]) => keys.some((item) => key.includes(item)));
-  if (found) return { name: found[1], pull: found[2], damage: found[3], tip: found[4] };
-  return { name: fallback, pull: `${fallback} skill de pull/stun`, damage: `${fallback} skill de dano`, tip: "Use depois de confirmar stun, nao seco." };
+  const found = profiles.find((profile) => profile.keys.some((item) => key.includes(item)));
+  return found || { name: fallback, pull: `${fallback} pull/stun`, burst: `${fallback} dano`, finisher: `${fallback} finisher`, tip: "Use depois de confirmar stun, nao seco." };
 }
 
-function comboPreset(fruitKey, styleKey, swordKey, gunKey) {
-  const has = (...keys) => keys.some((key) => fruitKey.includes(key) || styleKey.includes(key) || swordKey.includes(key) || gunKey.includes(key));
+function comboPreset(ctx) {
+  const { fruitKey, styleKey, swordKey, gunKey, style, sword, gun } = ctx;
   const god = styleKey.includes("godhuman");
-  const soul = gunKey.includes("soulguitar") || gunKey.includes("skullguitar");
+  const sanguine = styleKey.includes("sanguine");
+  const skull = gunKey.includes("soulguitar") || gunKey.includes("skullguitar");
   const cdk = swordKey.includes("curseddualkatana") || swordKey.includes("cdk");
   const spikey = swordKey.includes("spikeytrident");
-  if (fruitKey.includes("dough") && god && cdk && soul) {
-    return ["Soul Guitar X", "Dough V", "CDK Z", "Godhuman C", "Dough X", "CDK X", "Godhuman Z para finalizar"];
+  const has = (...keys) => keys.some((key) => fruitKey.includes(key) || styleKey.includes(key) || swordKey.includes(key) || gunKey.includes(key));
+
+  if (fruitKey.includes("dough") && god && cdk && skull) {
+    return { difficulty: "Media/Alta", sequence: ["Skull Guitar X para quebrar Instinct", "Dough V para prender", "CDK Z para alinhar", "Godhuman C", "Dough X", "CDK X", "Godhuman Z/X para finalizar"] };
   }
-  if (fruitKey.includes("rumble") && god && spikey && soul) {
-    return ["Soul Guitar X para quebrar Instinct", "Rumble X", "Spikey Trident X para puxar", "Godhuman C", "Rumble V", "Godhuman Z/X para finalizar"];
+  if (fruitKey.includes("dough") && spikey) {
+    return { difficulty: "Media", sequence: [gun.breaker, "Dough V", "Spikey Trident X para puxar", style.confirm, "Dough C/X", "Spikey Trident Z", style.finisher] };
   }
-  if (fruitKey.includes("ice") && god) {
-    return ["Ice V para freeze", "Godhuman C", cdk ? "CDK Z" : "Espada X/Z", "Ice C", "Godhuman Z/X", "Gun finisher se precisar"];
+  if ((fruitKey.includes("rumble") || fruitKey.includes("lightning")) && spikey) {
+    return { difficulty: "Media", sequence: [gun.breaker, "Rumble X", "Spikey Trident X", style.confirm, "Rumble V", "Spikey Trident Z", style.finisher] };
+  }
+  if (fruitKey.includes("ice")) {
+    return { difficulty: "Baixa/Media", sequence: ["Ice V para freeze", sword.pull, style.confirm, "Ice C", sword.burst, style.burst, gun.finisher] };
   }
   if (fruitKey.includes("dark") && spikey) {
-    return ["Dark C", "Spikey Trident X", god ? "Godhuman C" : "Estilo de luta stun/dano", "Dark X", "Spikey Trident Z", "Gun finisher"];
+    return { difficulty: "Media", sequence: ["Dark C", "Spikey Trident X", style.confirm, "Dark X", "Spikey Trident Z", style.burst, gun.finisher] };
   }
-  if (fruitKey.includes("portal") && cdk && soul) {
-    return ["Soul Guitar X", "Portal Z para entrar", "CDK Z", god ? "Godhuman C" : "Estilo de luta dano", "CDK X", "Portal V apenas para reset/reposicionar"];
+  if (fruitKey.includes("portal") && (cdk || spikey)) {
+    return { difficulty: "Alta", sequence: [gun.breaker, "Portal Z para entrar", sword.pull, style.confirm, sword.burst, style.burst, "Portal V/F para resetar ou sair do trade"], warning: "Portal nao da todo o dano; se o alvo escapar, use Portal para resetar em vez de perseguir seco." };
   }
-  if (has("kitsune")) {
-    return ["Baita Instinct com mobilidade", "Gun X/Z para confirmar", "Kitsune C ou X", "Estilo de luta dano rapido", "Espada burst", "Kitsune chase para finalizar"];
+  if (fruitKey.includes("kitsune")) {
+    return { difficulty: "Media", sequence: ["Baita Instinct com mobilidade", gun.breaker, "Kitsune C ou X", sanguine ? "Sanguine C" : style.confirm, sword.pull, style.burst, "Kitsune Z/F para chase final"] };
+  }
+  if (fruitKey.includes("buddha")) {
+    return { difficulty: "Baixa", sequence: [gun.breaker, sword.pull, `${style.name} + M1 para pressao`, "Use alcance do Buddha para manter trade favoravel", "Guarde transform/escape para nao tomar contra-combo"], warning: "Buddha e mais pressao/M1 do que combo one-shot. Nao espere uma rota bonita igual Dough/Ice." };
+  }
+  if (has("dragon", "trex", "leopard")) {
+    return { difficulty: "Media/Alta", sequence: [gun.breaker, `${ctx.fruit.confirm} para confirmar`, sword.pull, style.confirm, ctx.fruit.extender, sword.burst, `${ctx.fruit.finisher} para finalizar`] };
   }
   return null;
 }
 
-function comboDifficulty(...parts) {
-  const text = parts.map((item) => `${item.name || ""} ${item.label || ""}`).join(" ").toLowerCase();
-  if (/portal|dragon|control|oneshot/.test(text)) return "Alta";
-  if (/dough|rumble|godhuman|sanguine|cursed|spikey/.test(text)) return "Media";
-  return "Baixa/Media";
+function comboGenericRoute({ fruit, style, sword, gun, goal }) {
+  const route = [
+    `${gun.breaker} para gastar/quebrar Instinct antes do combo real.`,
+    `${fruit.confirm} para confirmar stun.`,
+    `${sword.pull} para puxar/alinha o alvo.`,
+    `${style.confirm} para manter preso.`,
+    `${sword.burst} + ${style.burst} como dano principal.`,
+    `${fruit.finisher} ou ${gun.finisher} para finalizar.`,
+  ];
+  if (goal.id === "control") {
+    route.splice(4, 0, "Segure uma skill de stun para caso o alvo escape.");
+  }
+  if (goal.id === "bounty") {
+    route.push("Depois do burst, recue ou reposicione; nao fique trocando hit sem cooldown.");
+  }
+  return route;
 }
 
-function foundMoveName(key, fallback) {
-  return key ? cleanFruitName(key) : fallback;
+function comboBuildWarning(fruit, style, sword, gun) {
+  const unknown = [fruit, style, sword, gun].filter((item) => !item.keys);
+  if (unknown.length) {
+    return `Alguns itens nao foram reconhecidos 100%; gerei uma rota segura usando os nomes enviados.`;
+  }
+  if (fruit.role === "mobility") return "Essa fruta depende mais de espada/estilo para dano do que da fruta em si.";
+  if (fruit.role === "m1") return "Essa build e melhor para pressao/M1, nao para combo longo.";
+  return "";
+}
+
+function comboDifficulty(...parts) {
+  const text = parts.map((item) => `${item.name || ""} ${item.label || ""}`).join(" ").toLowerCase();
+  if (/portal|dragon|control|oneshot|kitsune/.test(text)) return "Alta";
+  if (/dough|rumble|godhuman|sanguine|cursed|spikey/.test(text)) return "Media";
+  return "Baixa/Media";
 }
 
 async function createGuildAccess(interaction) {
