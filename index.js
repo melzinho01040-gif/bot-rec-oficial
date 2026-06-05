@@ -383,6 +383,60 @@ const commands = [
         .setDescription("Mostra o canal de logs configurado."),
     ),
   new SlashCommandBuilder()
+    .setName("botconfig")
+    .setDescription("Central de configuracao do bot.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand.setName("status").setDescription("Mostra configuracoes principais do servidor."),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("canal").setDescription("Configura canais importantes.")
+        .addStringOption((option) =>
+          option.setName("tipo").setDescription("Tipo de canal").setRequired(true).addChoices(
+            { name: "Logs", value: "logs" },
+            { name: "Stock", value: "stock" },
+            { name: "Sugestoes", value: "sugestoes" },
+            { name: "Boas-vindas", value: "boasvindas" },
+          ),
+        )
+        .addChannelOption((option) =>
+          option.setName("canal").setDescription("Canal").addChannelTypes(ChannelType.GuildText).setRequired(true),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("cargo").setDescription("Configura cargos importantes.")
+        .addStringOption((option) =>
+          option.setName("tipo").setDescription("Tipo de cargo").setRequired(true).addChoices(
+            { name: "Staff", value: "staff" },
+            { name: "Membro/Crew", value: "membro" },
+            { name: "Pendente/Parte da crew", value: "pendente" },
+          ),
+        )
+        .addRoleOption((option) => option.setName("cargo").setDescription("Cargo").setRequired(true)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("loja").setDescription("Configura nome e Pix da loja.")
+        .addStringOption((option) => option.setName("nome").setDescription("Nome da loja").setMaxLength(80).setRequired(false))
+        .addStringOption((option) => option.setName("pix").setDescription("Chave Pix").setMaxLength(160).setRequired(false)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("produto-criar").setDescription("Cria ou atualiza produto/plano da loja.")
+        .addStringOption((option) => option.setName("id").setDescription("ID curto, ex.: vip-mensal").setMaxLength(40).setRequired(true))
+        .addStringOption((option) => option.setName("nome").setDescription("Nome do produto").setMaxLength(80).setRequired(true))
+        .addStringOption((option) => option.setName("preco").setDescription("Preco, ex.: 19,90").setMaxLength(30).setRequired(true))
+        .addStringOption((option) => option.setName("descricao").setDescription("Descricao").setMaxLength(600).setRequired(true))
+        .addStringOption((option) => option.setName("periodo").setDescription("Periodo, ex.: mensal, unico").setMaxLength(30).setRequired(false))
+        .addStringOption((option) => option.setName("inclui").setDescription("Itens separados por |").setMaxLength(900).setRequired(false))
+        .addStringOption((option) => option.setName("entrega").setDescription("Como sera entregue").setMaxLength(900).setRequired(false)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("produto-remover").setDescription("Remove produto/plano da loja.")
+        .addStringOption((option) => option.setName("id").setDescription("ID do produto").setMaxLength(40).setRequired(true)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("produto-listar").setDescription("Lista produtos/planos cadastrados."),
+    ),
+  new SlashCommandBuilder()
     .setName("automod")
     .setDescription("Configura mute e auto-ban por palavras bloqueadas.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -1264,6 +1318,11 @@ async function handleCommand(interaction) {
     return;
   }
 
+  if (command === "botconfig") {
+    await handleBotConfigCommand(interaction);
+    return;
+  }
+
   if (command === "automod") {
     await handleAutomodCommand(interaction);
     return;
@@ -1551,8 +1610,8 @@ async function handleShopSetup(interaction) {
   const store = guildData(interaction.guildId);
   ensureShopDefaults(store);
   await channel.send({
-    embeds: [shopPanelEmbed(interaction.guild, store.shop.plans, bannerUrl)],
-    components: [shopPlanSelect(store.shop.plans)],
+    embeds: [shopPanelEmbed(interaction.guild, store.shop.plans, bannerUrl, store.shop)],
+    components: shopPanelComponents(store.shop.plans),
   });
   await interaction.reply(hidden({ content: `Painel de vendas enviado em ${channel}.` }));
 }
@@ -1561,8 +1620,8 @@ async function handlePlansCommand(interaction) {
   const store = guildData(interaction.guildId);
   ensureShopDefaults(store);
   await interaction.reply({
-    embeds: [shopPanelEmbed(interaction.guild, store.shop.plans, config.bannerUrl)],
-    components: [shopPlanSelect(store.shop.plans)],
+    embeds: [shopPanelEmbed(interaction.guild, store.shop.plans, config.bannerUrl, store.shop)],
+    components: shopPanelComponents(store.shop.plans),
   });
 }
 
@@ -1581,6 +1640,7 @@ async function handleShopPlanSelect(interaction) {
 async function createShopOrderTicket(interaction, plan) {
   await interaction.deferReply({ flags: EPHEMERAL });
   const store = guildData(interaction.guildId);
+  const staffRoleId = normalizeSnowflake(store.roles?.staffRoleId) || normalizeSnowflake(config.staffRoleId);
   const orderId = shortId("ord");
   const cleanName = slugChannelName(`${plan.name}-${interaction.user.username}`).slice(0, 42) || "pedido";
   const parentId = normalizeSnowflake(config.ticketCategoryId) || null;
@@ -1593,9 +1653,9 @@ async function createShopOrderTicket(interaction, plan) {
       id: interaction.user.id,
       allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
     },
-    ...(normalizeSnowflake(config.staffRoleId)
+    ...(staffRoleId
       ? [{
-        id: config.staffRoleId,
+        id: staffRoleId,
         allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages],
       }]
       : []),
@@ -1628,10 +1688,10 @@ async function createShopOrderTicket(interaction, plan) {
   scheduleDataSave();
 
   await channel.send({
-    content: [String(interaction.user), normalizeSnowflake(config.staffRoleId) ? `<@&${config.staffRoleId}>` : ""].filter(Boolean).join(" "),
+    content: [String(interaction.user), staffRoleId ? `<@&${staffRoleId}>` : ""].filter(Boolean).join(" "),
     embeds: [shopOrderEmbed(interaction.guild, order, plan)],
     components: shopPaymentRows(orderId),
-    allowedMentions: { users: [interaction.user.id], roles: normalizeSnowflake(config.staffRoleId) ? [config.staffRoleId] : [] },
+    allowedMentions: { users: [interaction.user.id], roles: staffRoleId ? [staffRoleId] : [] },
   });
   await sendAuditLog(interaction.guild, {
     title: "Auditoria: pedido de plano aberto",
@@ -1980,6 +2040,138 @@ async function handleLogsCommand(interaction) {
       .setColor(0x7b2cff)],
   });
   await interaction.reply(hidden({ content: `Logs configurados em ${channel}.` }));
+}
+
+async function handleBotConfigCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  const store = guildData(interaction.guildId);
+
+  if (sub === "status") {
+    await interaction.reply(hidden({ embeds: [botConfigStatusEmbed(interaction.guild, store)] }));
+    return;
+  }
+
+  if (sub === "canal") {
+    const type = interaction.options.getString("tipo", true);
+    const channel = interaction.options.getChannel("canal", true);
+    if (!(await ensurePanelTarget(interaction, channel))) return;
+    if (type === "logs") store.auditLogChannelId = channel.id;
+    if (type === "stock") store.stockChannelId = channel.id;
+    if (type === "sugestoes") store.suggestionChannelId = channel.id;
+    if (type === "boasvindas") store.welcome.channelId = channel.id;
+    scheduleDataSave();
+    await interaction.reply(hidden({ content: `Canal de **${botConfigChannelLabel(type)}** configurado em ${channel}.` }));
+    return;
+  }
+
+  if (sub === "cargo") {
+    const type = interaction.options.getString("tipo", true);
+    const role = interaction.options.getRole("cargo", true);
+    if (type === "staff") store.roles.staffRoleId = role.id;
+    if (type === "membro") store.roles.memberRoleId = role.id;
+    if (type === "pendente") store.roles.pendingCrewRoleId = role.id;
+    scheduleDataSave();
+    await interaction.reply(hidden({ content: `Cargo **${botConfigRoleLabel(type)}** configurado como ${role}.` }));
+    return;
+  }
+
+  if (sub === "loja") {
+    const name = interaction.options.getString("nome", false);
+    const pix = interaction.options.getString("pix", false);
+    ensureShopDefaults(store);
+    if (name) store.shop.storeName = name.slice(0, 80);
+    if (pix) store.shop.pixKey = pix.slice(0, 160);
+    scheduleDataSave();
+    await interaction.reply(hidden({ embeds: [botConfigStatusEmbed(interaction.guild, store)] }));
+    return;
+  }
+
+  if (sub === "produto-criar") {
+    ensureShopDefaults(store);
+    const id = slugChannelName(interaction.options.getString("id", true)).slice(0, 40);
+    const name = interaction.options.getString("nome", true).slice(0, 80);
+    const price = interaction.options.getString("preco", true).slice(0, 30);
+    const description = interaction.options.getString("descricao", true).slice(0, 600);
+    const period = (interaction.options.getString("periodo", false) || "unico").slice(0, 30);
+    const features = (interaction.options.getString("inclui", false) || "Entrega combinada com a equipe")
+      .split("|")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 8);
+    const delivery = (interaction.options.getString("entrega", false) || "A equipe entrega apos confirmar o pagamento.").slice(0, 900);
+    if (!id) {
+      await interaction.reply(hidden({ content: "ID invalido. Use algo tipo `vip-mensal`." }));
+      return;
+    }
+    const plan = { id, name, price, period, description, features, delivery };
+    const index = store.shop.plans.findIndex((item) => item.id === id);
+    if (index >= 0) store.shop.plans[index] = plan;
+    else store.shop.plans.push(plan);
+    scheduleDataSave();
+    await interaction.reply(hidden({ embeds: [shopPlanDetailEmbed(interaction.guild, plan).setTitle(`Produto salvo: ${plan.name}`)] }));
+    return;
+  }
+
+  if (sub === "produto-remover") {
+    ensureShopDefaults(store);
+    const id = slugChannelName(interaction.options.getString("id", true)).slice(0, 40);
+    const before = store.shop.plans.length;
+    store.shop.plans = store.shop.plans.filter((item) => item.id !== id);
+    scheduleDataSave();
+    await interaction.reply(hidden({ content: before === store.shop.plans.length ? `Nao achei produto com ID \`${id}\`.` : `Produto \`${id}\` removido.` }));
+    return;
+  }
+
+  if (sub === "produto-listar") {
+    ensureShopDefaults(store);
+    await interaction.reply(hidden({ embeds: [shopProductsListEmbed(interaction.guild, store.shop.plans)] }));
+  }
+}
+
+function botConfigStatusEmbed(guild, store) {
+  ensureShopDefaults(store);
+  return baseEmbed(guild)
+    .setTitle("Config do bot")
+    .setDescription("Configuracoes salvas para este servidor.")
+    .addFields(
+      {
+        name: "Canais",
+        value: [
+          `Logs: ${channelMention(store.auditLogChannelId || config.auditLogChannelId)}`,
+          `Stock: ${channelMention(store.stockChannelId || config.stockChannelId)}`,
+          `Sugestoes: ${channelMention(store.suggestionChannelId)}`,
+          `Boas-vindas: ${channelMention(store.welcome.channelId)}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Cargos",
+        value: [
+          `Staff: ${roleMention(store.roles.staffRoleId || config.staffRoleId)}`,
+          `Membro/Crew: ${roleMention(store.roles.memberRoleId || config.memberRoleId)}`,
+          `Pendente: ${roleMention(store.roles.pendingCrewRoleId || config.pendingCrewRoleId)}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Loja",
+        value: `Nome: **${store.shop.storeName || config.storeName}**\nPix: \`${store.shop.pixKey || config.pixKey}\``,
+        inline: false,
+      },
+      {
+        name: "AutoMod",
+        value: `Mute: **${store.automod.muteMinutes || 1} min**\nAuto-ban: **${store.automod.autoBanEnabled ? "on" : "off"}**\nBan: **${store.automod.banThreshold || 50} infracoes/${store.automod.windowMinutes || 60} min**`,
+        inline: false,
+      },
+    );
+}
+
+function botConfigChannelLabel(type) {
+  return { logs: "logs", stock: "stock", sugestoes: "sugestoes", boasvindas: "boas-vindas" }[type] || type;
+}
+
+function botConfigRoleLabel(type) {
+  return { staff: "staff", membro: "membro/crew", pendente: "pendente/parte da crew" }[type] || type;
 }
 
 async function handleAutomodCommand(interaction) {
@@ -3702,9 +3894,11 @@ function findShopOrder(guildId, orderId) {
 }
 
 function isShopStaff(member) {
+  const store = member?.guild ? guildData(member.guild.id) : null;
+  const staffRoleId = normalizeSnowflake(store?.roles?.staffRoleId) || normalizeSnowflake(config.staffRoleId);
   return Boolean(member?.permissions?.has(PermissionFlagsBits.ManageGuild)
     || member?.permissions?.has(PermissionFlagsBits.ManageChannels)
-    || (normalizeSnowflake(config.staffRoleId) && member?.roles?.cache?.has(config.staffRoleId)));
+    || (staffRoleId && member?.roles?.cache?.has(staffRoleId)));
 }
 
 function shortId(prefix = "id") {
@@ -5327,9 +5521,9 @@ function servicesButtons(guild) {
   );
 }
 
-function shopPanelEmbed(guild, plans, bannerUrl = "") {
+function shopPanelEmbed(guild, plans, bannerUrl = "", shop = {}) {
   const embed = baseEmbed(guild)
-    .setTitle(`${config.storeName} | Planos`)
+    .setTitle(`${shop.storeName || config.storeName} | Planos`)
     .setDescription(plans.map((plan) => `**${plan.name}** - R$ ${plan.price}/${plan.period}\n${plan.description}`).join("\n\n") || "Nenhum plano cadastrado.")
     .addFields({
       name: "Como comprar",
@@ -5339,6 +5533,10 @@ function shopPanelEmbed(guild, plans, bannerUrl = "") {
     .setColor(0x00ff85);
   if (bannerUrl) embed.setImage(bannerUrl);
   return embed;
+}
+
+function shopPanelComponents(plans) {
+  return plans.length ? [shopPlanSelect(plans)] : [];
 }
 
 function shopPlanSelect(plans) {
@@ -5355,6 +5553,7 @@ function shopPlanSelect(plans) {
 }
 
 function shopOrderEmbed(guild, order, plan) {
+  const shop = guildData(guild.id).shop || {};
   return baseEmbed(guild)
     .setTitle(`Pedido ${order.id}`)
     .setDescription([
@@ -5363,14 +5562,36 @@ function shopOrderEmbed(guild, order, plan) {
       `Valor: **R$ ${plan.price}/${plan.period}**`,
       "",
       "**Pix:**",
-      `\`${config.pixKey}\``,
+      `\`${shop.pixKey || config.pixKey}\``,
       "",
       "Depois de pagar, clique em **Enviar comprovante**.",
     ].join("\n"))
     .addFields(
-      { name: "Inclui", value: (plan.features || []).map((item) => `• ${item}`).join("\n") || "Nao informado", inline: false },
+      { name: "Inclui", value: (plan.features || []).map((item) => `- ${item}`).join("\n") || "Nao informado", inline: false },
       { name: "Entrega", value: plan.delivery || "A equipe entrega apos confirmar o pagamento.", inline: false },
     )
+    .setColor(0x7b2cff);
+}
+
+function shopPlanDetailEmbed(guild, plan) {
+  return baseEmbed(guild)
+    .setTitle(plan.name)
+    .setDescription(plan.description)
+    .addFields(
+      { name: "ID", value: `\`${plan.id}\``, inline: true },
+      { name: "Preco", value: `R$ ${plan.price}/${plan.period || "unico"}`, inline: true },
+      { name: "Inclui", value: (plan.features || []).map((item) => `- ${item}`).join("\n") || "Nao informado", inline: false },
+      { name: "Entrega", value: plan.delivery || "A equipe entrega apos confirmar o pagamento.", inline: false },
+    )
+    .setColor(0x00ff85);
+}
+
+function shopProductsListEmbed(guild, plans) {
+  return baseEmbed(guild)
+    .setTitle("Produtos cadastrados")
+    .setDescription(plans.length
+      ? plans.map((plan) => `\`${plan.id}\` - **${plan.name}** - R$ ${plan.price}/${plan.period || "unico"}`).join("\n")
+      : "Nenhum produto cadastrado.")
     .setColor(0x7b2cff);
 }
 
@@ -5651,6 +5872,7 @@ function guildData(guildId) {
   store.strikes ||= {};
   store.welcome ||= {};
   store.verification ||= {};
+  store.roles ||= {};
   store.automod ||= {};
   store.automod.muteMinutes ||= 1;
   store.automod.autoBanEnabled ??= false;
@@ -7242,6 +7464,11 @@ function normalizeSnowflake(value) {
 function roleMention(roleId) {
   const clean = normalizeSnowflake(roleId);
   return clean ? `<@&${clean}>` : "Nenhum cargo configurado";
+}
+
+function channelMention(channelId) {
+  const clean = normalizeSnowflake(channelId);
+  return clean ? `<#${clean}>` : "Nenhum canal configurado";
 }
 
 function parseUrlList(raw) {
