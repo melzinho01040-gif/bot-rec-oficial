@@ -11,6 +11,7 @@ const {
   ActivityType,
   ModalBuilder,
   MessageFlags,
+  Partials,
   PermissionFlagsBits,
   REST,
   Routes,
@@ -88,6 +89,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildExpressions || GatewayIntentBits.GuildEmojisAndStickers,
   ].filter(Boolean),
+  partials: [Partials.Message, Partials.Channel, Partials.GuildMember, Partials.User],
 });
 
 let lastStockHashes = { normal: "", mirage: "" };
@@ -381,6 +383,11 @@ const commands = [
       subcommand
         .setName("status")
         .setDescription("Mostra o canal de logs configurado."),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("teste")
+        .setDescription("Envia uma log de teste no canal configurado."),
     ),
   new SlashCommandBuilder()
     .setName("botconfig")
@@ -1173,6 +1180,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+  await logMemberRoleChanges(oldMember, newMember);
   if (oldMember.premiumSince || !newMember.premiumSince) return;
   const channel = await resolveChannel(newMember.guild, config.boostChannelId || newMember.guild.systemChannelId);
   if (!channel) return;
@@ -1226,6 +1234,51 @@ client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
 client.on(Events.GuildMemberAdd, async (member) => {
   await trackMemberInvite(member);
   await sendWelcomeMessage(member);
+  await sendAuditLog(member.guild, {
+    title: "Auditoria: membro entrou",
+    color: 0x00ff85,
+    thumbnail: member.user.displayAvatarURL({ size: 128 }),
+    fields: [
+      ["Membro", `${member} (\`${member.id}\`)`],
+      ["Conta criada", `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, true],
+      ["Entrou", `<t:${Math.floor(Date.now() / 1000)}:F>`, true],
+    ],
+  });
+});
+
+client.on(Events.GuildMemberRemove, async (member) => {
+  await sendAuditLog(member.guild, {
+    title: "Auditoria: membro saiu",
+    color: 0xffc857,
+    thumbnail: member.user?.displayAvatarURL?.({ size: 128 }),
+    fields: [
+      ["Membro", `${member.user?.tag || "desconhecido"} (\`${member.id}\`)`],
+      ["Saiu", `<t:${Math.floor(Date.now() / 1000)}:F>`],
+    ],
+  });
+});
+
+client.on(Events.GuildBanAdd, async (ban) => {
+  await sendAuditLog(ban.guild, {
+    title: "Auditoria: membro banido",
+    color: 0xff3b5c,
+    thumbnail: ban.user.displayAvatarURL({ size: 128 }),
+    fields: [
+      ["Usuario", `${ban.user.tag} (\`${ban.user.id}\`)`],
+      ["Motivo", ban.reason || "Nao informado"],
+    ],
+  });
+});
+
+client.on(Events.GuildBanRemove, async (ban) => {
+  await sendAuditLog(ban.guild, {
+    title: "Auditoria: membro desbanido",
+    color: 0x00ff85,
+    thumbnail: ban.user.displayAvatarURL({ size: 128 }),
+    fields: [
+      ["Usuario", `${ban.user.tag} (\`${ban.user.id}\`)`],
+    ],
+  });
 });
 
 client.on(Events.GuildCreate, async (guild) => {
@@ -2010,16 +2063,48 @@ async function handleLogsCommand(interaction) {
   const store = guildData(interaction.guildId);
   if (sub === "status") {
     const channel = await resolveChannel(interaction.guild, store.auditLogChannelId || config.auditLogChannelId);
+    const check = channel ? await canSendLogToChannel(interaction.guild, channel) : { ok: false, message: "nenhum canal configurado" };
     await interaction.reply(hidden({
       embeds: [baseEmbed(interaction.guild)
         .setTitle("Status dos logs")
         .setDescription(channel ? `Canal atual: ${channel}` : "Nenhum canal de logs foi configurado ainda.")
-        .addFields({
-          name: "Eventos registrados",
-          value: "Automod/mute por xingamento\nMensagem apagada/editada\nTickets\nRecrutamento/aprovacoes\nEventos, torneios e PVP",
-          inline: false,
-        })],
+        .addFields(
+          {
+            name: "Diagnostico",
+            value: check.ok ? "OK: consigo enviar embeds nesse canal." : `Problema: ${check.message}`,
+            inline: false,
+          },
+          {
+            name: "Ultimos envios",
+            value: [
+              `Ultimo sucesso: ${store.logs.lastOkAt ? `<t:${Math.floor(store.logs.lastOkAt / 1000)}:R>` : "nunca"}`,
+              `Ultima falha: ${store.logs.lastFailAt ? `<t:${Math.floor(store.logs.lastFailAt / 1000)}:R>` : "nunca"}`,
+              `Falhas: **${store.logs.failedCount || 0}**`,
+              `Erro: ${safeField(store.logs.lastError || "nenhum", 500)}`,
+            ].join("\n"),
+            inline: false,
+          },
+          {
+            name: "Eventos registrados",
+            value: "Automod/mute por xingamento\nMensagem apagada/editada\nEntrada/saida de membros\nTickets\nRecrutamento/aprovacoes\nEventos, torneios e PVP",
+            inline: false,
+          },
+        )],
     }));
+    return;
+  }
+
+  if (sub === "teste") {
+    const ok = await sendAuditLog(interaction.guild, {
+      title: "Auditoria: teste de logs",
+      color: 0x00ff85,
+      fields: [
+        ["Responsavel", `${interaction.user} (\`${interaction.user.id}\`)`],
+        ["Canal do comando", `${interaction.channel}`],
+        ["Status", "Se voce recebeu esta mensagem, as logs estao funcionando."],
+      ],
+    });
+    await interaction.reply(hidden({ content: ok ? "Log de teste enviada." : `Nao consegui enviar log. Use /logs status. Erro: ${guildData(interaction.guildId).logs.lastError || "desconhecido"}` }));
     return;
   }
 
@@ -4115,17 +4200,31 @@ function eventStyleEmbed(guild, color = config.color) {
     .setTimestamp();
 }
 
+async function logMemberRoleChanges(oldMember, newMember) {
+  if (!oldMember?.guild || !newMember?.guild || oldMember.user?.bot) return;
+  const oldRoles = oldMember.roles.cache;
+  const newRoles = newMember.roles.cache;
+  const added = newRoles.filter((role) => !oldRoles.has(role.id) && role.id !== newMember.guild.id);
+  const removed = oldRoles.filter((role) => !newRoles.has(role.id) && role.id !== newMember.guild.id);
+  if (!added.size && !removed.size) return;
+
+  await sendAuditLog(newMember.guild, {
+    title: "Auditoria: cargos alterados",
+    color: added.size ? 0x00ff85 : 0xffc857,
+    thumbnail: newMember.user.displayAvatarURL({ size: 128 }),
+    fields: [
+      ["Membro", `${newMember} (\`${newMember.id}\`)`],
+      ["Adicionados", added.size ? added.map((role) => `${role}`).slice(0, 12).join(", ") : "Nenhum"],
+      ["Removidos", removed.size ? removed.map((role) => `${role}`).slice(0, 12).join(", ") : "Nenhum"],
+    ],
+  });
+}
+
 async function sendAuditLog(guild, audit) {
   const store = guildData(guild.id);
-  const channel = await resolveChannel(
-    guild,
-    store.auditLogChannelId || config.auditLogChannelId || config.applicationLogChannelId || config.applicationReviewChannelId,
-  );
-  if (!channel?.isTextBased?.()) return false;
-
   const embed = eventStyleEmbed(guild, audit.color || config.color)
-    .setTitle(audit.title || "📚 Auditoria")
-    .setFooter({ text: `${config.brandName} • Auditoria • ${formatDateTime()}` });
+    .setTitle(audit.title || "Auditoria")
+    .setFooter({ text: `${config.brandName} | Auditoria | ${formatDateTime()}` });
 
   if (audit.description) embed.setDescription(audit.description);
   if (audit.thumbnail) embed.setThumbnail(audit.thumbnail);
@@ -4138,10 +4237,65 @@ async function sendAuditLog(guild, audit) {
     })));
   }
 
-  await channel.send({ embeds: [embed] }).catch((error) => {
-    console.warn(`[AUDIT] Nao consegui enviar auditoria: ${error.message}`);
-  });
-  return true;
+  const channels = await resolveAuditLogChannels(guild);
+  let lastError = "Nenhum canal de logs configurado.";
+  for (const channel of channels) {
+    const check = await canSendLogToChannel(guild, channel);
+    if (!check.ok) {
+      lastError = `${channel?.name || channel?.id || "canal"}: ${check.message}`;
+      continue;
+    }
+    const sent = await channel.send({ embeds: [embed] })
+      .then(() => true)
+      .catch((error) => {
+        lastError = `${channel.name}: ${error.message}`;
+        return false;
+      });
+    if (sent) {
+      store.logs.lastOkAt = Date.now();
+      store.logs.lastChannelId = channel.id;
+      store.logs.lastError = "";
+      scheduleDataSave();
+      return true;
+    }
+  }
+
+  store.logs.failedCount = (store.logs.failedCount || 0) + 1;
+  store.logs.lastFailAt = Date.now();
+  store.logs.lastError = lastError;
+  scheduleDataSave();
+  console.warn(`[AUDIT] Nao consegui enviar auditoria em ${guild.name}: ${lastError}`);
+  return false;
+}
+
+async function resolveAuditLogChannels(guild) {
+  const store = guildData(guild.id);
+  const ids = [
+    store.auditLogChannelId,
+    config.auditLogChannelId,
+    config.applicationLogChannelId,
+    config.applicationReviewChannelId,
+    guild.systemChannelId,
+  ].map(normalizeSnowflake).filter(Boolean);
+  const channels = [];
+  for (const channelId of [...new Set(ids)]) {
+    const channel = await resolveChannel(guild, channelId);
+    if (channel?.isTextBased?.()) channels.push(channel);
+  }
+  return channels;
+}
+
+async function canSendLogToChannel(guild, channel) {
+  if (!channel?.isTextBased?.()) return { ok: false, message: "canal nao e de texto" };
+  const me = await guild.members.fetchMe().catch(() => null);
+  const permissions = me ? channel.permissionsFor(me) : null;
+  const needed = [
+    [PermissionFlagsBits.ViewChannel, "Ver canal"],
+    [PermissionFlagsBits.SendMessages, "Enviar mensagens"],
+    [PermissionFlagsBits.EmbedLinks, "Inserir embeds"],
+  ];
+  const missing = needed.filter(([bit]) => !permissions?.has(bit)).map(([, label]) => label);
+  return missing.length ? { ok: false, message: `faltam permissoes: ${missing.join(", ")}` } : { ok: true, message: "ok" };
 }
 
 function formatClock(date = new Date()) {
@@ -4174,6 +4328,8 @@ async function removeReviewMessage(interaction) {
 
 async function createTicket(interaction) {
   await interaction.deferReply({ flags: EPHEMERAL });
+  const store = guildData(interaction.guildId);
+  const staffRoleId = normalizeSnowflake(store.roles?.staffRoleId) || normalizeSnowflake(config.staffRoleId);
   const cleanName = interaction.user.username.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 18) || "ticket";
   const channel = await interaction.guild.channels.create({
     name: `ticket-${cleanName}`,
@@ -4188,9 +4344,9 @@ async function createTicket(interaction) {
         id: interaction.user.id,
         allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
       },
-      ...(config.staffRoleId
+      ...(staffRoleId
         ? [{
-          id: config.staffRoleId,
+          id: staffRoleId,
           allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
         }]
         : []),
@@ -4198,7 +4354,7 @@ async function createTicket(interaction) {
   });
 
   await channel.send({
-    content: [String(interaction.user), config.staffRoleId ? `<@&${config.staffRoleId}>` : ""].filter(Boolean).join(" "),
+    content: [String(interaction.user), staffRoleId ? `<@&${staffRoleId}>` : ""].filter(Boolean).join(" "),
     embeds: [baseEmbed(interaction.guild)
       .setTitle(`${emo(interaction.guild, "ticket")} Atendimento aberto`)
       .setDescription([
@@ -4208,23 +4364,33 @@ async function createTicket(interaction) {
         "**Tipo:** Servicos / atendimento geral",
         "",
         "Explique o que voce precisa, envie prints se tiver e aguarde a equipe.",
+        "Quando terminar, use o botao para fechar e enviar transcript nas logs.",
       ].join("\n"))
       .setColor(0x7b2cff)],
     components: [new ActionRowBuilder().addComponents(
       button(`ticket_channel_close:${interaction.user.id}`, "Fechar atendimento", ButtonStyle.Danger, "close", interaction.guild),
     )],
-    allowedMentions: { users: [interaction.user.id], roles: config.staffRoleId ? [config.staffRoleId] : [] },
+    allowedMentions: { users: [interaction.user.id], roles: staffRoleId ? [staffRoleId] : [] },
   });
 
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: ticket de servicos aberto",
+    color: 0x7b2cff,
+    fields: [
+      ["Usuario", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Canal", `${channel}`],
+    ],
+  });
   await interaction.editReply(`Ticket criado: ${channel}`);
 }
 
 async function closeTicketChannel(interaction) {
   const [, openerId] = String(interaction.customId).split(":");
+  const staffRoleId = normalizeSnowflake(guildData(interaction.guildId).roles?.staffRoleId || config.staffRoleId);
   const canClose = interaction.user.id === openerId
     || interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)
     || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
-    || (config.staffRoleId && interaction.member?.roles?.cache?.has(config.staffRoleId));
+    || (staffRoleId && interaction.member?.roles?.cache?.has(staffRoleId));
   if (!canClose) {
     await interaction.reply(hidden({ content: "Apenas quem abriu ou a equipe pode fechar este ticket." }));
     return;
@@ -4269,7 +4435,9 @@ async function setupTicketCenter(interaction) {
   const adminRole = interaction.options.getRole("cargo_admin", false);
   const logChannel = interaction.options.getChannel("canal_logs", false);
   const parentChannel = supportChannel || leaveChannel || interaction.channel;
-  const supportRoleId = supportRole?.id || config.staffRoleId || "0";
+  const store = guildData(interaction.guildId);
+  const supportRoleId = supportRole?.id || store.roles?.staffRoleId || config.staffRoleId || "0";
+  const logChannelId = logChannel?.id || store.auditLogChannelId || config.auditLogChannelId || "0";
 
   if (!(await ensureTicketParent(interaction, parentChannel))) return;
   if (logChannel && !(await ensurePanelTarget(interaction, logChannel))) return;
@@ -4280,7 +4448,7 @@ async function setupTicketCenter(interaction) {
       parentChannelId: parentChannel.id,
       supportRoleId,
       adminRoleId: adminRole?.id || "0",
-      logChannelId: logChannel?.id || "0",
+      logChannelId,
     })],
   });
 }
@@ -4317,26 +4485,35 @@ function ticketCenterEmbed(guild) {
     .setDescription([
       "## Central de ajuda",
       "",
-      "**Peca ajuda, tire suas duvidas, faca denuncias e fale com a equipe.**",
+      "**Peca ajuda, tire duvidas, faca denuncias e resgate premios com atendimento privado.**",
       "",
-      "- Escolha uma opcao no menu abaixo para abrir um ticket.",
-      "- Explique tudo com calma no formulario.",
-      "- Um membro da equipe vai assumir seu atendimento.",
-      "- Quanto mais detalhes, mais rapido fica o suporte.",
+      "Escolha uma opcao no menu abaixo e preencha o formulario. O bot cria um topico privado, avisa a equipe e gera transcript quando fechar.",
     ].join("\n"))
     .addFields(
       {
-        name: `${emo(guild, "support")} Como funciona`,
+        name: `${emo(guild, "ticket")} Categorias`,
         value: [
-          "O bot cria um topico privado para voce e a equipe.",
-          "O ticket pode ser assumido, receber convidados e gerar transcript ao fechar.",
-          "Canais e cargos configurados ficam ocultos no painel.",
+          "**Suporte:** ajuda geral e problemas.",
+          "**Denuncias:** casos com provas e envolvidos.",
+          "**Duvidas:** perguntas rapidas sobre a comunidade.",
+          "**Sorteio/Resgate:** premios e confirmacoes.",
+          "**Sair da crew:** conversa privada com lideranca.",
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: `${emo(guild, "support")} Fluxo`,
+        value: [
+          "1. Abra pelo menu e mande detalhes.",
+          "2. A equipe assume o atendimento.",
+          "3. Pessoas podem ser adicionadas se necessario.",
+          "4. O fechamento envia transcript nas logs.",
         ].join("\n"),
         inline: false,
       },
       {
         name: `${emo(guild, "staff")} Sigilo`,
-        value: "Evite marcar staff sem necessidade. O sistema ja avisa a equipe quando o ticket abre.",
+        value: "Canais, cargos e logs ficam ocultos no painel. Envie provas somente dentro do ticket.",
         inline: false,
       },
     )
@@ -4510,8 +4687,9 @@ async function createAdvancedTicketThread(interaction, parsed, form) {
 
   const safeUser = normalizeChannelName(interaction.user.username);
   const safeSubject = normalizeChannelName(form.subject).slice(0, 28) || ticketTypeLabel(parsed.type);
+  const protocol = createTicketProtocol(store);
   const thread = await parent.threads.create({
-    name: `${ticketTypeShort(parsed.type)}-${safeUser}-${safeSubject}`.slice(0, 95),
+    name: `${ticketTypeShort(parsed.type)}-${protocol}-${safeUser}-${safeSubject}`.slice(0, 95),
     type: ChannelType.PrivateThread,
     autoArchiveDuration: 1440,
     invitable: false,
@@ -4520,11 +4698,23 @@ async function createAdvancedTicketThread(interaction, parsed, form) {
 
   await addTicketMembers(thread, interaction, parsed);
   store.tickets.openByUser[ticketKey] = thread.id;
+  store.tickets.records[thread.id] = {
+    protocol,
+    type: parsed.type,
+    openerId: interaction.user.id,
+    subject: form.subject,
+    status: "aberto",
+    openedAt: Date.now(),
+    claimedBy: "",
+    closedBy: "",
+    closedAt: 0,
+  };
   scheduleDataSave();
 
+  const ticketForEmbed = { ...parsed, protocol };
   await thread.send({
     content: [String(interaction.user), parsed.supportRoleId !== "0" ? `<@&${parsed.supportRoleId}>` : ""].filter(Boolean).join(" "),
-    embeds: [ticketInitialEmbed(interaction.guild, interaction.user, parsed, form)],
+    embeds: [ticketInitialEmbed(interaction.guild, interaction.user, ticketForEmbed, form)],
     components: ticketComponents(interaction.guild, interaction.user.id, parsed),
     allowedMentions: { users: [interaction.user.id], roles: parsed.supportRoleId !== "0" ? [parsed.supportRoleId] : [] },
   });
@@ -4534,6 +4724,7 @@ async function createAdvancedTicketThread(interaction, parsed, form) {
     color: ticketTypeColor(parsed.type),
     fields: [
       ["Usuario", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Protocolo", protocol, true],
       ["Tipo", ticketTypeLabel(parsed.type), true],
       ["Topico", `${thread}`, true],
       ["Assunto", form.subject],
@@ -4550,6 +4741,7 @@ function ticketInitialEmbed(guild, user, ticket, form = null) {
       `Atendimento aberto para ${user}.`,
       "",
       "**Status:** Aguardando equipe",
+      `**Protocolo:** ${ticket.protocol || "gerando"}`,
       `**Prioridade:** ${ticketTypePriority(ticket.type)}`,
       "",
       ticketTypeGuide(ticket.type),
@@ -4635,6 +4827,14 @@ async function claimTicket(interaction) {
 
   await interaction.deferUpdate();
   await isolateThreadMembers(interaction.channel, [ticket.openerId, interaction.user.id, client.user.id]);
+  const store = guildData(interaction.guildId);
+  const record = store.tickets.records[interaction.channel.id];
+  if (record) {
+    record.status = "assumido";
+    record.claimedBy = interaction.user.id;
+    record.claimedAt = Date.now();
+    scheduleDataSave();
+  }
 
   await interaction.message.edit({
     embeds: interaction.message.embeds.length
@@ -4654,6 +4854,15 @@ async function claimTicket(interaction) {
   }).catch(() => {});
 
   await interaction.followUp(hidden({ content: "Voce assumiu este ticket. O topico foi ajustado para ficar mais privado." })).catch(() => {});
+  await sendTicketLog(interaction.guild, ticket.logChannelId, {
+    title: "Ticket assumido",
+    color: 0x00ff85,
+    fields: [
+      ["Protocolo", record?.protocol || interaction.channel.id, true],
+      ["Topico", `${interaction.channel}`, true],
+      ["Assumido por", `${interaction.user} (\`${interaction.user.id}\`)`],
+    ],
+  });
 }
 
 async function isolateThreadMembers(thread, allowedIds) {
@@ -4691,6 +4900,14 @@ async function leaveTicket(interaction) {
 
   await interaction.reply(hidden({ content: "Voce saiu do ticket. Se precisar de novo, abra outro pela central." }));
   await interaction.channel.members.remove(interaction.user.id).catch(() => {});
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: usuario saiu do ticket",
+    color: 0xffc857,
+    fields: [
+      ["Usuario", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Topico", `${interaction.channel}`],
+    ],
+  });
 }
 
 async function addPeopleToTicket(interaction) {
@@ -4715,6 +4932,17 @@ async function addPeopleToTicket(interaction) {
   await interaction.reply(hidden({
     content: added.length ? `Adicionado(s): ${added.join(", ")}` : "Nao consegui adicionar ninguem.",
   }));
+  if (added.length) {
+    await sendAuditLog(interaction.guild, {
+      title: "Auditoria: pessoas adicionadas ao ticket",
+      color: 0x7b2cff,
+      fields: [
+        ["Responsavel", `${interaction.user} (\`${interaction.user.id}\`)`],
+        ["Topico", `${interaction.channel}`],
+        ["Adicionados", added.join(", ")],
+      ],
+    });
+  }
 }
 
 async function closeTicket(interaction) {
@@ -4734,26 +4962,37 @@ async function closeTicket(interaction) {
   }
 
   await interaction.deferReply({ flags: EPHEMERAL });
+  const store = guildData(interaction.guildId);
+  const record = store.tickets.records[interaction.channel.id];
   const transcript = await buildTranscript(interaction.channel);
   const attachment = new AttachmentBuilder(Buffer.from(transcript, "utf8"), {
-    name: `transcript-${interaction.channel.id}.txt`,
+    name: `transcript-${record?.protocol || interaction.channel.id}.txt`,
   });
 
-  const logChannel = await resolveChannel(interaction.guild, ticket.logChannelId);
+  const logChannel = await resolveTicketLogChannel(interaction.guild, ticket.logChannelId);
   if (logChannel) {
     await logChannel.send({
       embeds: [baseEmbed(interaction.guild)
         .setTitle(`${emo(interaction.guild, "logs")} Ticket fechado`)
         .addFields(
+          { name: "Protocolo", value: record?.protocol || "Nao registrado", inline: true },
           { name: "Topico", value: interaction.channel.name, inline: true },
+          { name: "Tipo", value: record ? ticketTypeLabel(record.type) : "Nao registrado", inline: true },
           { name: "Aberto por", value: `<@${ticket.openerId}>`, inline: true },
           { name: "Fechado por", value: `${interaction.user}`, inline: true },
+          { name: "Assunto", value: safeField(record?.subject || "Nao registrado", 900), inline: false },
         )
         .setTimestamp()],
       files: [attachment],
     }).catch(() => {});
   }
 
+  if (record) {
+    record.status = "fechado";
+    record.closedBy = interaction.user.id;
+    record.closedAt = Date.now();
+    scheduleDataSave();
+  }
   clearOpenTicketRecord(interaction.guildId, ticket.openerId, interaction.channel.id);
   await interaction.editReply(`Ticket fechado. ${logChannel ? "Transcript enviado nas logs." : "Sem canal de logs configurado."}`);
   await interaction.channel.setLocked(true).catch(() => {});
@@ -4768,6 +5007,38 @@ function clearOpenTicketRecord(guildId, openerId, threadId) {
     }
   }
   scheduleDataSave();
+}
+
+function createTicketProtocol(store) {
+  store.tickets.totalOpened = (store.tickets.totalOpened || 0) + 1;
+  const number = String(store.tickets.totalOpened).padStart(4, "0");
+  return `TK-${number}`;
+}
+
+async function resolveTicketLogChannel(guild, configuredChannelId) {
+  const store = guildData(guild.id);
+  return resolveChannel(
+    guild,
+    configuredChannelId && configuredChannelId !== "0"
+      ? configuredChannelId
+      : store.auditLogChannelId || config.auditLogChannelId || config.applicationLogChannelId || config.applicationReviewChannelId,
+  );
+}
+
+async function sendTicketLog(guild, configuredChannelId, payload) {
+  const channel = await resolveTicketLogChannel(guild, configuredChannelId);
+  if (!channel?.isTextBased?.()) return;
+  await channel.send({
+    embeds: [baseEmbed(guild)
+      .setTitle(payload.title)
+      .setColor(payload.color || 0x7b2cff)
+      .addFields(...(payload.fields || []).map(([name, value, inline = false]) => ({
+        name,
+        value: safeField(value),
+        inline,
+      })))
+      .setTimestamp()],
+  }).catch(() => {});
 }
 
 async function buildTranscript(thread) {
@@ -5868,6 +6139,12 @@ function guildData(guildId) {
   store.stockMessageIds ||= {};
   store.auditLogChannelId ||= "";
   store.suggestionChannelId ||= "";
+  store.logs ||= {};
+  store.logs.failedCount ||= 0;
+  store.logs.lastError ||= "";
+  store.logs.lastOkAt ||= 0;
+  store.logs.lastFailAt ||= 0;
+  store.logs.lastChannelId ||= "";
   store.warns ||= {};
   store.strikes ||= {};
   store.welcome ||= {};
@@ -5893,6 +6170,8 @@ function guildData(guildId) {
   store.pvp.history ||= [];
   store.tickets ||= {};
   store.tickets.openByUser ||= {};
+  store.tickets.records ||= {};
+  store.tickets.totalOpened ||= 0;
   return store;
 }
 
@@ -6102,19 +6381,64 @@ async function applyMemberTimeout(member, durationMs, reason, botMember = null) 
   if (member.id === member.guild.ownerId) return { ok: false, message: "O dono do servidor nao pode receber timeout pelo Discord." };
 
   const me = botMember || await member.guild.members.fetchMe().catch(() => null);
-  if (!me?.permissions?.has(PermissionFlagsBits.ModerateMembers)) {
-    return { ok: false, message: "Falta a permissao Moderar membros no cargo do bot." };
-  }
-  if (!member.moderatable) {
-    return { ok: false, message: "O cargo do bot precisa ficar acima do cargo da pessoa. Pessoas com cargo maior/igual nao podem ser mutadas." };
+  if (!me) return { ok: false, message: "Nao consegui localizar o membro do bot no servidor." };
+  const hierarchyProblem = me.roles.highest.comparePositionTo(member.roles.highest) <= 0;
+  if (!hierarchyProblem && me.permissions?.has(PermissionFlagsBits.ModerateMembers)) {
+    const safeDuration = clamp(Number(durationMs || 0), 60 * 1000, 28 * 24 * 60 * 60 * 1000);
+    try {
+      await member.timeout(safeDuration, reason);
+      return { ok: true, message: "Timeout aplicado." };
+    } catch (error) {
+      const fallback = await applyAutomodMuteRole(member, safeDuration, reason, me);
+      return fallback.ok
+        ? { ok: true, message: `Timeout falhou (${error.message}), mas apliquei cargo mutado.` }
+        : { ok: false, message: `Timeout falhou: ${error.message}. Fallback tambem falhou: ${fallback.message}` };
+    }
   }
 
   const safeDuration = clamp(Number(durationMs || 0), 60 * 1000, 28 * 24 * 60 * 60 * 1000);
-  try {
-    await member.timeout(safeDuration, reason);
-    return { ok: true, message: "Timeout aplicado." };
-  } catch (error) {
-    return { ok: false, message: `Erro do Discord: ${error.message}` };
+  const fallback = await applyAutomodMuteRole(member, safeDuration, reason, me);
+  if (fallback.ok) return { ok: true, message: `Cargo mutado aplicado. ${hierarchyProblem ? "Timeout nao usado por hierarquia de cargos." : "Timeout nao usado por falta de Moderar membros."}` };
+  if (hierarchyProblem) return { ok: false, message: "O cargo do bot precisa ficar acima do maior cargo da pessoa." };
+  return { ok: false, message: `Falta Moderar membros e o fallback falhou: ${fallback.message}` };
+}
+
+async function applyAutomodMuteRole(member, durationMs, reason, botMember) {
+  if (member.permissions?.has(PermissionFlagsBits.Administrator)) {
+    return { ok: false, message: "membro tem Administrador; o Discord ignora overwrites de canal." };
+  }
+  if (!botMember?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
+    return { ok: false, message: "falta Gerenciar cargos para aplicar cargo mutado." };
+  }
+
+  const guild = member.guild;
+  let role = guild.roles.cache.find((item) => roleSearchKey(item.name) === "automod mute");
+  if (!role) {
+    role = await guild.roles.create({
+      name: "AutoMod Mute",
+      color: 0x2f3136,
+      permissions: [],
+      reason,
+    }).catch(() => null);
+  }
+  if (!role) return { ok: false, message: "nao consegui criar o cargo AutoMod Mute." };
+  if (role.managed || botMember.roles.highest.comparePositionTo(role) <= 0) {
+    return { ok: false, message: "cargo AutoMod Mute esta acima do bot ou e gerenciado." };
+  }
+
+  await ensureMuteRoleOverwrites(guild, role, reason);
+  const added = await member.roles.add(role, reason).then(() => true).catch((error) => error.message);
+  if (added !== true) return { ok: false, message: `nao consegui adicionar cargo mutado: ${added}` };
+  setTimeout(() => {
+    member.roles.remove(role, "AutoMod: tempo de mute encerrado").catch(() => {});
+  }, durationMs).unref?.();
+  return { ok: true, message: "cargo mutado aplicado." };
+}
+
+async function ensureMuteRoleOverwrites(guild, role, reason) {
+  for (const channel of guild.channels.cache.values()) {
+    if (![ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildVoice, ChannelType.GuildStageVoice, ChannelType.PublicThread, ChannelType.PrivateThread].includes(channel.type)) continue;
+    await channel.permissionOverwrites?.edit(role, { SendMessages: false, SendMessagesInThreads: false, CreatePublicThreads: false, CreatePrivateThreads: false, AddReactions: false, Speak: false }, { reason }).catch(() => {});
   }
 }
 
@@ -6129,6 +6453,10 @@ function findBadWord(content) {
     const pattern = new RegExp(`(^|\\s)${escapeRegExp(clean).replace(/\\ /g, "\\s+")}(\\s|$)`, "i");
     if (pattern.test(normalized)) return clean;
     if (cleanCompact.length >= 4 && compact.includes(cleanCompact)) return clean;
+    if (cleanCompact.length >= 2 && cleanCompact.length <= 3) {
+      const spacedPattern = new RegExp(`(^|\\s)${cleanCompact.split("").map(escapeRegExp).join("\\s*")}(\\s|$)`, "i");
+      if (spacedPattern.test(normalized)) return clean;
+    }
   }
   return "";
 }
@@ -7514,8 +7842,12 @@ function parseBadWords(raw) {
     "pau",
     "pica",
     "punheta",
+    "cu",
+    "ku",
     "teu cu",
     "olho do cu",
+    "butao",
+    "buta",
     "buceta",
     "xoxota",
     "sacanagem",
@@ -7526,6 +7858,10 @@ function parseBadWords(raw) {
     "arrombado",
     "desgracado",
     "desgraçado",
+    "krl",
+    "krlh",
+    "crlh",
+    "karalho",
     "lixo",
   ];
   const custom = String(raw || "")
