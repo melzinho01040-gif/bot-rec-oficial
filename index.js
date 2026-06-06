@@ -198,6 +198,43 @@ const commands = [
     .setName("planos")
     .setDescription("Mostra os planos disponiveis da loja."),
   new SlashCommandBuilder()
+    .setName("painel")
+    .setDescription("Paineis publicos do servidor.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("scripts")
+        .setDescription("Envia um painel com seletiva de scripts cadastrados.")
+        .addChannelOption((option) =>
+          option.setName("canal").setDescription("Canal onde o painel sera enviado").addChannelTypes(ChannelType.GuildText).setRequired(false),
+        ),
+    ),
+  new SlashCommandBuilder()
+    .setName("cadastrar-script")
+    .setDescription("Cadastra ou atualiza um script gratuito para o painel.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption((option) =>
+      option.setName("id").setDescription("ID curto, ex.: auto-farm").setMaxLength(40).setRequired(true),
+    )
+    .addStringOption((option) =>
+      option.setName("nome").setDescription("Nome do script").setMaxLength(80).setRequired(true),
+    )
+    .addStringOption((option) =>
+      option.setName("descricao").setDescription("Descricao do script").setMaxLength(900).setRequired(true),
+    )
+    .addStringOption((option) =>
+      option.setName("codigo").setDescription("Cole o script aqui").setMaxLength(4000).setRequired(true),
+    )
+    .addStringOption((option) =>
+      option.setName("linguagem").setDescription("Linguagem, ex.: lua, js").setMaxLength(30).setRequired(false),
+    )
+    .addStringOption((option) =>
+      option.setName("categoria").setDescription("Categoria, ex.: Blox Fruits").setMaxLength(60).setRequired(false),
+    )
+    .addStringOption((option) =>
+      option.setName("imagem_url").setDescription("Imagem/banner opcional").setRequired(false),
+    ),
+  new SlashCommandBuilder()
     .setName("recrutamento")
     .setDescription("Central moderna de recrutamento.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -1360,6 +1397,19 @@ async function handleCommand(interaction) {
     return;
   }
 
+  if (command === "painel") {
+    const subcommand = interaction.options.getSubcommand();
+    if (subcommand === "scripts") {
+      await handleScriptsPanelCommand(interaction);
+      return;
+    }
+  }
+
+  if (command === "cadastrar-script") {
+    await handleRegisterScriptCommand(interaction);
+    return;
+  }
+
   if (command === "recrutamento") {
     const subcommand = interaction.options.getSubcommand();
     if (subcommand === "setup") {
@@ -1706,6 +1756,63 @@ async function handlePlansCommand(interaction) {
     embeds: [shopPanelEmbed(interaction.guild, store.shop.plans, config.bannerUrl, store.shop)],
     components: shopPanelComponents(store.shop.plans),
   });
+}
+
+async function handleRegisterScriptCommand(interaction) {
+  const store = guildData(interaction.guildId);
+  const id = slugChannelName(interaction.options.getString("id", true)).slice(0, 40);
+  const name = interaction.options.getString("nome", true).slice(0, 80);
+  const description = interaction.options.getString("descricao", true).slice(0, 900);
+  const code = interaction.options.getString("codigo", true).slice(0, 4000);
+  const language = (interaction.options.getString("linguagem", false) || "lua").slice(0, 30);
+  const category = (interaction.options.getString("categoria", false) || "Scripts").slice(0, 60);
+  const imageUrl = safeImageUrl(interaction.options.getString("imagem_url", false)) || "";
+
+  if (!id) {
+    await interaction.reply(hidden({ content: "ID invalido. Use algo tipo `auto-farm`." }));
+    return;
+  }
+
+  const script = {
+    id,
+    name,
+    description,
+    code,
+    language,
+    category,
+    imageUrl,
+    authorId: interaction.user.id,
+    updatedAt: Date.now(),
+  };
+  const index = store.scripts.items.findIndex((item) => item.id === id);
+  if (index >= 0) store.scripts.items[index] = script;
+  else store.scripts.items.push(script);
+  store.scripts.items = store.scripts.items.slice(-25);
+  scheduleDataSave();
+
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: script cadastrado",
+    color: 0x7b2cff,
+    fields: [
+      ["Responsavel", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Script", `${name} (\`${id}\`)`],
+      ["Categoria", category],
+    ],
+  });
+
+  await interaction.reply(hidden({ embeds: [scriptPreviewEmbed(interaction.guild, script).setTitle(`Script salvo: ${script.name}`)] }));
+}
+
+async function handleScriptsPanelCommand(interaction) {
+  const channel = interaction.options.getChannel("canal", false) || interaction.channel;
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+  const store = guildData(interaction.guildId);
+  const scripts = store.scripts.items || [];
+  await channel.send({
+    embeds: [scriptsPanelEmbed(interaction.guild, scripts)],
+    components: scriptsPanelComponents(interaction.guild, scripts),
+  });
+  await interaction.reply(hidden({ content: scripts.length ? `Painel de scripts enviado em ${channel}.` : `Painel enviado em ${channel}, mas ainda nao tem script cadastrado.` }));
 }
 
 async function handleShopPlanSelect(interaction) {
@@ -3807,6 +3914,11 @@ async function handleUserSelect(interaction) {
 async function handleStringSelect(interaction) {
   if (interaction.customId === "shop:select-plan") {
     await handleShopPlanSelect(interaction);
+    return;
+  }
+
+  if (interaction.customId === "script:select") {
+    await handleScriptSelect(interaction);
     return;
   }
 
@@ -5926,6 +6038,91 @@ function servicesButtons(guild) {
   );
 }
 
+function scriptsPanelEmbed(guild, scripts) {
+  const latest = scripts.slice(-6).reverse();
+  return baseEmbed(guild)
+    .setTitle("Painel de Scripts")
+    .setDescription([
+      "Escolha um script no menu abaixo para receber o codigo.",
+      "",
+      scripts.length
+        ? latest.map((script) => `**${script.name}** - ${script.category || "Scripts"}\n${script.description}`).join("\n\n")
+        : "Nenhum script cadastrado ainda. Use `/cadastrar-script` para adicionar.",
+    ].join("\n"))
+    .setColor(0x7b2cff)
+    .setFooter({ text: `${config.brandName} | Scripts gratuitos` });
+}
+
+function scriptsPanelComponents(guild, scripts) {
+  if (!scripts.length) return [];
+  return [new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("script:select")
+      .setPlaceholder(`${emojiText(guild, "script") || "📜"} Escolha um script`)
+      .addOptions(scripts.slice(-25).reverse().map((script) => ({
+        label: script.name.slice(0, 100),
+        description: `${script.category || "Scripts"} - ${(script.description || "Sem descricao").slice(0, 70)}`.slice(0, 100),
+        value: script.id,
+      }))),
+  )];
+}
+
+async function handleScriptSelect(interaction) {
+  const store = guildData(interaction.guildId);
+  const scriptId = interaction.values?.[0];
+  const script = store.scripts.items.find((item) => item.id === scriptId);
+  if (!script) {
+    await interaction.reply(hidden({ content: "Esse script nao existe mais. Peca para a equipe reenviar o painel." }));
+    return;
+  }
+
+  const payload = scriptDeliveryPayload(interaction.guild, script);
+  await interaction.reply(hidden(payload));
+  script.downloads = (script.downloads || 0) + 1;
+  script.lastUsedAt = Date.now();
+  scheduleDataSave();
+}
+
+function scriptPreviewEmbed(guild, script) {
+  const embed = baseEmbed(guild)
+    .setTitle(script.name)
+    .setDescription(script.description)
+    .addFields(
+      { name: "ID", value: `\`${script.id}\``, inline: true },
+      { name: "Categoria", value: script.category || "Scripts", inline: true },
+      { name: "Linguagem", value: script.language || "lua", inline: true },
+      { name: "Atualizado", value: script.updatedAt ? `<t:${Math.floor(script.updatedAt / 1000)}:R>` : "Agora", inline: true },
+    )
+    .setColor(0x00ff85);
+  if (script.imageUrl) embed.setImage(script.imageUrl);
+  return embed;
+}
+
+function scriptDeliveryPayload(guild, script) {
+  const embed = scriptPreviewEmbed(guild, script)
+    .setTitle(`Script: ${script.name}`)
+    .setFooter({ text: `${config.brandName} | Uso livre no servidor` });
+  const code = String(script.code || "").trim();
+  if (code.length <= 900) {
+    embed.addFields({ name: "Codigo", value: `\`\`\`${script.language || "lua"}\n${code}\n\`\`\``, inline: false });
+    return { embeds: [embed] };
+  }
+
+  const attachment = new AttachmentBuilder(Buffer.from(code, "utf8"), {
+    name: `${script.id || "script"}.${scriptFileExtension(script.language)}`,
+  });
+  embed.addFields({ name: "Codigo", value: "O script esta anexado em arquivo porque ficou grande para embed.", inline: false });
+  return { embeds: [embed], files: [attachment] };
+}
+
+function scriptFileExtension(language) {
+  const clean = normalizeKey(language || "lua");
+  if (clean.includes("javascript") || clean === "js") return "js";
+  if (clean.includes("python") || clean === "py") return "py";
+  if (clean.includes("txt")) return "txt";
+  return "lua";
+}
+
 function shopPanelEmbed(guild, plans, bannerUrl = "", shop = {}) {
   const embed = baseEmbed(guild)
     .setTitle(`${shop.storeName || config.storeName} | Planos`)
@@ -6294,6 +6491,8 @@ function guildData(guildId) {
   store.shop ||= {};
   store.shop.plans ||= defaultShopPlans();
   store.shop.orders ||= {};
+  store.scripts ||= {};
+  store.scripts.items ||= [];
   store.goals ||= {};
   store.presences ||= {};
   store.shifts ||= {};
