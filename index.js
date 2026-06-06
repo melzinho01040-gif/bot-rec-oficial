@@ -105,6 +105,7 @@ const xpCooldowns = new Map();
 const inviteCache = new Map();
 const spamBuckets = new Map();
 const automodMuteCooldowns = new Map();
+const botDeletedMessageIds = new Map();
 let dataSaveTimer = null;
 let fruityBloxActionCache = { id: "", expiresAt: 0 };
 
@@ -1232,6 +1233,8 @@ client.on(Events.MessageCreate, (message) => {
 
 client.on(Events.MessageDelete, async (message) => {
   if (!message.guild || message.author?.bot) return;
+  const botDeleteReason = consumeBotDeletedMessageReason(message);
+  if (botDeleteReason) return;
   await sendAuditLog(message.guild, {
     title: "Auditoria: mensagem apagada",
     color: 0xffc857,
@@ -2091,6 +2094,7 @@ async function handleLogsCommand(interaction) {
   if (sub === "status") {
     const channel = await resolveChannel(interaction.guild, store.auditLogChannelId || config.auditLogChannelId);
     const check = channel ? await canSendLogToChannel(interaction.guild, channel) : { ok: false, message: "nenhum canal configurado" };
+    const fallbackLines = await auditLogFallbackStatusLines(interaction.guild);
     await interaction.reply(hidden({
       embeds: [baseEmbed(interaction.guild)
         .setTitle("Status dos logs")
@@ -2109,6 +2113,11 @@ async function handleLogsCommand(interaction) {
               `Falhas: **${store.logs.failedCount || 0}**`,
               `Erro: ${safeField(store.logs.lastError || "nenhum", 500)}`,
             ].join("\n"),
+            inline: false,
+          },
+          {
+            name: "Fallbacks",
+            value: safeField(fallbackLines.join("\n") || "Nenhum fallback encontrado.", 900),
             inline: false,
           },
           {
@@ -3527,8 +3536,8 @@ async function createGuildAccess(interaction) {
 }
 
 async function handleGuildBanUser(interaction) {
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-    await interaction.reply(hidden({ content: "Apenas quem tem Administrador pode usar esse comando." }));
+  if (interaction.user.id !== interaction.guild.ownerId) {
+    await interaction.reply(hidden({ content: "Apenas o dono do servidor pode usar esse comando." }));
     return;
   }
 
@@ -4411,6 +4420,16 @@ async function canSendLogToChannel(guild, channel) {
   ];
   const missing = needed.filter(([bit]) => !permissions?.has(bit)).map(([, label]) => label);
   return missing.length ? { ok: false, message: `faltam permissoes: ${missing.join(", ")}` } : { ok: true, message: "ok" };
+}
+
+async function auditLogFallbackStatusLines(guild) {
+  const channels = await resolveAuditLogChannels(guild);
+  const lines = [];
+  for (const channel of channels.slice(0, 5)) {
+    const check = await canSendLogToChannel(guild, channel);
+    lines.push(`${check.ok ? "OK" : "ERRO"} ${channel}: ${check.message}`);
+  }
+  return lines;
 }
 
 function formatClock(date = new Date()) {
@@ -6421,7 +6440,7 @@ async function guardMessage(message) {
   }
 
   if (hasInvite || hasBadLink || bucket.length >= 6) {
-    await message.delete().catch(() => {});
+    await deleteMessageByBot(message, bucket.length >= 6 ? "anti-spam" : "anti-link");
     await sendAuditLog(message.guild, {
       title: "Auditoria: anti-spam/anti-link",
       color: 0xff3b5c,
@@ -6435,6 +6454,23 @@ async function guardMessage(message) {
   }
 }
 
+async function deleteMessageByBot(message, reason) {
+  if (!message?.id) return false;
+  botDeletedMessageIds.set(message.id, { reason, at: Date.now() });
+  setTimeout(() => botDeletedMessageIds.delete(message.id), 30000).unref?.();
+  return message.delete().then(() => true).catch(() => {
+    botDeletedMessageIds.delete(message.id);
+    return false;
+  });
+}
+
+function consumeBotDeletedMessageReason(message) {
+  const record = message?.id ? botDeletedMessageIds.get(message.id) : null;
+  if (!record) return "";
+  botDeletedMessageIds.delete(message.id);
+  return record.reason || "apagada pelo bot";
+}
+
 async function punishBadWord(message, badWord) {
   const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
   const botMember = await message.guild.members.fetchMe().catch(() => null);
@@ -6444,7 +6480,7 @@ async function punishBadWord(message, badWord) {
   const now = Date.now();
   const cooldownKey = `${message.guildId}:${message.author.id}`;
   if ((automodMuteCooldowns.get(cooldownKey) || 0) > now) {
-    await message.delete().catch(() => {});
+    await deleteMessageByBot(message, "automod cooldown");
     return;
   }
   automodMuteCooldowns.set(cooldownKey, now + 2500);
@@ -6453,7 +6489,7 @@ async function punishBadWord(message, badWord) {
   const infractionCount = settings.infractions[message.author.id].length;
   scheduleDataSave();
 
-  await message.delete().catch(() => {});
+  const deleted = await deleteMessageByBot(message, "automod palavra bloqueada");
   const shouldBan = Boolean(settings.autoBanEnabled) && infractionCount >= Math.max(2, settings.banThreshold || 50);
   const canBan = shouldBan && member?.bannable && botMember?.permissions?.has(PermissionFlagsBits.BanMembers);
   let punishment = "";
@@ -6487,7 +6523,9 @@ async function punishBadWord(message, badWord) {
       ["Usuario", `${message.author} (\`${message.author.id}\`)`],
       ["Canal", `${message.channel}`],
       ["Punicao", punishment],
-      ["Infrações", `${infractionCount}/${settings.banThreshold || 50} em ${settings.windowMinutes || 60} min`],
+      ["Palavra detectada", `\`${badWord}\``, true],
+      ["Mensagem apagada", deleted ? "Sim" : "Nao consegui apagar", true],
+      ["Infracoes", `${infractionCount}/${settings.banThreshold || 50} em ${settings.windowMinutes || 60} min`],
       ["Motivo", "Palavra ofensiva bloqueada"],
       ["Conteudo", safeField(message.content)],
     ],
@@ -6582,12 +6620,16 @@ function findBadWord(content) {
 
 function normalizeBadWordText(value) {
   return stripAccents(String(value || "").toLowerCase())
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, "")
     .replace(/[4@]/g, "a")
     .replace(/3/g, "e")
     .replace(/[1!|]/g, "i")
     .replace(/0/g, "o")
     .replace(/[5$]/g, "s")
     .replace(/7/g, "t")
+    .replace(/8/g, "b")
+    .replace(/\+/g, "t")
+    .replace(/ç/g, "c")
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/([a-z])\1{1,}/g, "$1")
     .replace(/\s+/g, " ")
@@ -7944,6 +7986,9 @@ function parseBadWords(raw) {
   const defaults = [
     "boquete",
     "fdp",
+    "tnc",
+    "vtnc",
+    "vsf",
     "porra",
     "porra nenhuma",
     "que porra e essa",
@@ -7968,7 +8013,10 @@ function parseBadWords(raw) {
     "butao",
     "buta",
     "buceta",
+    "bct",
+    "bceta",
     "xoxota",
+    "xota",
     "sacanagem",
     "cacete",
     "caceta",
@@ -7977,6 +8025,10 @@ function parseBadWords(raw) {
     "arrombado",
     "desgracado",
     "desgraçado",
+    "otario",
+    "otaria",
+    "viado",
+    "viada",
     "krl",
     "krlh",
     "crlh",
