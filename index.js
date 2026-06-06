@@ -22,6 +22,8 @@ const {
   UserSelectMenuBuilder,
 } = require("discord.js");
 const fs = require("fs");
+const http = require("http");
+const crypto = require("crypto");
 const path = require("path");
 
 const fontconfigDir = path.join(__dirname, "fontconfig");
@@ -41,7 +43,11 @@ try {
 const config = {
   token: process.env.DISCORD_TOKEN,
   clientId: process.env.CLIENT_ID,
+  clientSecret: process.env.DISCORD_CLIENT_SECRET || process.env.CLIENT_SECRET || "",
   guildId: process.env.GUILD_ID,
+  siteBaseUrl: String(process.env.SITE_BASE_URL || process.env.PUBLIC_URL || "").replace(/\/+$/, ""),
+  port: Number(process.env.PORT || 3000),
+  oauthStateSecret: process.env.OAUTH_STATE_SECRET || process.env.DISCORD_TOKEN || "dev-secret",
   registerCommands: String(process.env.REGISTER_COMMANDS || "false").toLowerCase() === "true",
   brandName: process.env.BRAND_NAME || "Divine Hunters",
   color: parseColor(process.env.BRAND_COLOR || process.env.EMBED_COLOR || process.env.COLOR || "7b2cff"),
@@ -108,6 +114,7 @@ const automodMuteCooldowns = new Map();
 const botDeletedMessageIds = new Map();
 let dataSaveTimer = null;
 let fruityBloxActionCache = { id: "", expiresAt: 0 };
+let verificationServerStarted = false;
 
 const FRUITYBLOX_STOCK_URL = "https://fruityblox.com/stock";
 const FRUITYBLOX_ACTION_ID_FALLBACK = "00f5faf6ef807fd99ad4baa377a0a84ba899093aba";
@@ -201,6 +208,14 @@ const commands = [
     .setName("painel")
     .setDescription("Paineis publicos do servidor.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("setup")
+        .setDescription("Envia painel com botao para o site do bot.")
+        .addChannelOption((option) =>
+          option.setName("canal").setDescription("Canal onde o painel sera enviado").addChannelTypes(ChannelType.GuildText).setRequired(false),
+        ),
+    )
     .addSubcommand((subcommand) =>
       subcommand
         .setName("scripts")
@@ -691,6 +706,12 @@ const commands = [
         .addChannelOption((option) => option.setName("canal").setDescription("Canal do painel").addChannelTypes(ChannelType.GuildText).setRequired(true))
         .addRoleOption((option) => option.setName("cargo").setDescription("Cargo liberado apos verificar").setRequired(true))
         .addStringOption((option) => option.setName("link").setDescription("Link de regras/site para abrir antes de verificar").setRequired(false))
+        .addStringOption((option) => option.setName("imagem_url").setDescription("Imagem opcional do painel").setRequired(false)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("site").setDescription("Envia painel de verificacao por site OAuth do Discord.")
+        .addChannelOption((option) => option.setName("canal").setDescription("Canal do painel").addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addRoleOption((option) => option.setName("cargo").setDescription("Cargo liberado apos autorizar no site").setRequired(true))
         .addStringOption((option) => option.setName("imagem_url").setDescription("Imagem opcional do painel").setRequired(false)),
     ),
   new SlashCommandBuilder()
@@ -1207,6 +1228,7 @@ client.once(Events.ClientReady, async () => {
   startPresenceRotation();
   await cacheAllGuildInvites();
   ensureStockSchedulerStarted();
+  startVerificationSite();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -1399,6 +1421,10 @@ async function handleCommand(interaction) {
 
   if (command === "painel") {
     const subcommand = interaction.options.getSubcommand();
+    if (subcommand === "setup") {
+      await handleSitePanelCommand(interaction);
+      return;
+    }
     if (subcommand === "scripts") {
       await handleScriptsPanelCommand(interaction);
       return;
@@ -1756,6 +1782,20 @@ async function handlePlansCommand(interaction) {
     embeds: [shopPanelEmbed(interaction.guild, store.shop.plans, config.bannerUrl, store.shop)],
     components: shopPanelComponents(store.shop.plans),
   });
+}
+
+async function handleSitePanelCommand(interaction) {
+  const channel = interaction.options.getChannel("canal", false) || interaction.channel;
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+  if (!config.siteBaseUrl) {
+    await interaction.reply(hidden({ content: "Configure `SITE_BASE_URL` no Railway para usar o painel do site." }));
+    return;
+  }
+  await channel.send({
+    embeds: [sitePanelEmbed(interaction.guild)],
+    components: [sitePanelButtons(interaction.guild)],
+  });
+  await interaction.reply(hidden({ content: `Painel do site enviado em ${channel}.` }));
 }
 
 async function handleRegisterScriptCommand(interaction) {
@@ -2766,6 +2806,12 @@ async function handleWelcomeCommand(interaction) {
 }
 
 async function handleVerificationCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  if (sub === "site") {
+    await handleVerificationSiteCommand(interaction);
+    return;
+  }
+
   const channel = interaction.options.getChannel("canal", true);
   const role = interaction.options.getRole("cargo", true);
   const link = safeHttpUrl(interaction.options.getString("link", false)) || "";
@@ -2793,6 +2839,270 @@ async function handleVerificationCommand(interaction) {
     components: [verificationButtons(interaction.guild, role.id, link)],
   });
   await interaction.reply(hidden({ content: `Painel de verificacao enviado em ${channel}. Cargo liberado: ${role}.` }));
+}
+
+async function handleVerificationSiteCommand(interaction) {
+  const channel = interaction.options.getChannel("canal", true);
+  const role = interaction.options.getRole("cargo", true);
+  const imageUrl = safeImageUrl(interaction.options.getString("imagem_url", false)) || "";
+  if (!(await ensurePanelTarget(interaction, channel))) return;
+  const botMember = await interaction.guild.members.fetchMe().catch(() => null);
+  if (!botMember?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
+    await interaction.reply(hidden({ content: "Eu preciso da permissao Gerenciar cargos para liberar membros." }));
+    return;
+  }
+  if (role.managed || botMember.roles.highest.comparePositionTo(role) <= 0) {
+    await interaction.reply(hidden({ content: "Meu cargo precisa ficar acima do cargo de verificacao na lista de cargos." }));
+    return;
+  }
+  if (!config.siteBaseUrl || !config.clientSecret) {
+    await interaction.reply(hidden({ content: "Configure `SITE_BASE_URL` e `DISCORD_CLIENT_SECRET` no Railway antes de usar verificacao por site." }));
+    return;
+  }
+
+  const store = guildData(interaction.guildId);
+  store.verification.roleId = role.id;
+  store.verification.channelId = channel.id;
+  store.verification.siteEnabled = true;
+  store.verification.imageUrl = imageUrl;
+  scheduleDataSave();
+
+  const url = verificationSiteUrl(interaction.guildId);
+  await channel.send({
+    embeds: [verificationSiteEmbed(interaction.guild, role, url, imageUrl)],
+    components: [verificationSiteButton(interaction.guild, url)],
+  });
+  await interaction.reply(hidden({ content: `Painel de verificacao por site enviado em ${channel}. Cargo liberado: ${role}.` }));
+}
+
+function startVerificationSite() {
+  if (verificationServerStarted) return;
+  verificationServerStarted = true;
+  const server = http.createServer((req, res) => {
+    handleVerificationHttp(req, res).catch((error) => {
+      console.warn(`[SITE] ${error.message}`);
+      sendHtml(res, 500, sitePage("Erro", "Nao consegui concluir a verificacao. Tente novamente em alguns minutos."));
+    });
+  });
+  server.listen(config.port, () => {
+    console.log(`[OK] Site de verificacao ouvindo na porta ${config.port}`);
+  });
+}
+
+async function handleVerificationHttp(req, res) {
+  const url = new URL(req.url || "/", config.siteBaseUrl || `http://localhost:${config.port}`);
+  if (url.pathname === "/health") {
+    sendText(res, 200, "ok");
+    return;
+  }
+  if (url.pathname === "/verify") {
+    const guildId = normalizeSnowflake(url.searchParams.get("guild"));
+    const guild = guildId ? client.guilds.cache.get(guildId) : null;
+    if (!guild) {
+      sendHtml(res, 404, sitePage("Servidor nao encontrado", "Nao encontrei esse servidor no bot."));
+      return;
+    }
+    if (!config.siteBaseUrl || !config.clientSecret) {
+      sendHtml(res, 500, sitePage("Site nao configurado", "A equipe precisa configurar SITE_BASE_URL e DISCORD_CLIENT_SECRET no Railway."));
+      return;
+    }
+    sendHtml(res, 200, verifyLandingPage(guild, discordOAuthUrl(guildId)));
+    return;
+  }
+  if (url.pathname === "/dashboard" || url.pathname === "/") {
+    sendHtml(res, 200, dashboardPage());
+    return;
+  }
+  if (url.pathname === "/invite") {
+    res.writeHead(302, { Location: botInviteUrl() });
+    res.end();
+    return;
+  }
+  if (url.pathname === "/oauth/callback") {
+    await handleDiscordOAuthCallback(url, res);
+    return;
+  }
+  sendHtml(res, 404, sitePage("Pagina nao encontrada", "Use o painel enviado no Discord."));
+}
+
+async function handleDiscordOAuthCallback(url, res) {
+  const code = url.searchParams.get("code") || "";
+  const state = url.searchParams.get("state") || "";
+  const stateData = verifyOAuthState(state);
+  if (!code || !stateData?.guildId) {
+    sendHtml(res, 400, sitePage("Verificacao invalida", "O link expirou ou esta invalido. Abra o painel no Discord novamente."));
+    return;
+  }
+
+  const token = await exchangeDiscordCode(code);
+  const profile = await fetchDiscordOAuthUser(token.access_token);
+  const guild = client.guilds.cache.get(stateData.guildId);
+  const store = guild ? guildData(guild.id) : null;
+  const roleId = normalizeSnowflake(store?.verification?.roleId);
+  const role = roleId ? guild?.roles.cache.get(roleId) : null;
+  if (!guild || !role) {
+    sendHtml(res, 404, sitePage("Configuracao nao encontrada", "A equipe precisa recriar o painel de verificacao."));
+    return;
+  }
+
+  const member = await guild.members.fetch(profile.id).catch(() => null);
+  if (!member) {
+    sendHtml(res, 403, sitePage("Entre no servidor", "Voce precisa estar no servidor antes de verificar."));
+    return;
+  }
+  const botMember = await guild.members.fetchMe().catch(() => null);
+  if (!botMember?.permissions?.has(PermissionFlagsBits.ManageRoles) || role.managed || botMember.roles.highest.comparePositionTo(role) <= 0) {
+    sendHtml(res, 500, sitePage("Cargo sem permissao", "A equipe precisa colocar o cargo do bot acima do cargo de verificado."));
+    return;
+  }
+
+  await member.roles.add(role, `Verificacao OAuth concluida por ${profile.username} (${profile.id})`);
+  await sendAuditLog(guild, {
+    title: "Auditoria: membro verificado pelo site",
+    color: 0x00ff85,
+    fields: [
+      ["Membro", `${member} (\`${member.id}\`)`],
+      ["Cargo", `${role}`],
+      ["Discord OAuth", `${profile.username} (\`${profile.id}\`)`],
+    ],
+  });
+  sendHtml(res, 200, sitePage("Verificado", `Pronto, ${escapeHtml(profile.username)}. Os canais foram liberados no Discord.`));
+}
+
+function verificationSiteUrl(guildId) {
+  return `${config.siteBaseUrl}/verify?guild=${encodeURIComponent(guildId)}`;
+}
+
+function siteDashboardUrl() {
+  return `${config.siteBaseUrl}/dashboard`;
+}
+
+function botInviteUrl() {
+  const params = new URLSearchParams({
+    client_id: config.clientId,
+    permissions: "8",
+    scope: "bot applications.commands",
+  });
+  return `https://discord.com/oauth2/authorize?${params.toString()}`;
+}
+
+function discordOAuthUrl(guildId) {
+  const params = new URLSearchParams({
+    client_id: config.clientId,
+    redirect_uri: oauthRedirectUri(),
+    response_type: "code",
+    scope: "identify",
+    state: signOAuthState({ guildId, nonce: shortId("oauth"), exp: Date.now() + 10 * 60 * 1000 }),
+    prompt: "consent",
+  });
+  return `https://discord.com/oauth2/authorize?${params.toString()}`;
+}
+
+function oauthRedirectUri() {
+  return `${config.siteBaseUrl}/oauth/callback`;
+}
+
+function signOAuthState(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", config.oauthStateSecret).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+
+function verifyOAuthState(state) {
+  const [body, sig] = String(state || "").split(".");
+  if (!body || !sig) return null;
+  const expected = crypto.createHmac("sha256", config.oauthStateSecret).update(body).digest("base64url");
+  if (Buffer.byteLength(sig) !== Buffer.byteLength(expected)) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  const parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+  return parsed.exp && Date.now() <= parsed.exp ? parsed : null;
+}
+
+async function exchangeDiscordCode(code) {
+  const response = await fetch("https://discord.com/api/oauth2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: oauthRedirectUri(),
+    }),
+  });
+  if (!response.ok) throw new Error(`OAuth token HTTP ${response.status}`);
+  return response.json();
+}
+
+async function fetchDiscordOAuthUser(accessToken) {
+  const response = await fetch("https://discord.com/api/users/@me", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!response.ok) throw new Error(`OAuth user HTTP ${response.status}`);
+  return response.json();
+}
+
+function verifyLandingPage(guild, oauthUrl) {
+  return sitePage("Verificacao", `Clique no botao abaixo para autorizar sua conta Discord e liberar os canais de ${escapeHtml(guild.name)}.`, `<a class="button" href="${oauthUrl}">Autorizar com Discord</a>`);
+}
+
+function dashboardPage() {
+  const guilds = [...client.guilds.cache.values()]
+    .sort((a, b) => (b.memberCount || 0) - (a.memberCount || 0))
+    .map((guild) => `<article class="card">
+      <strong>${escapeHtml(guild.name)}</strong>
+      <span>${guild.memberCount || 0} membros</span>
+      <a href="${verificationSiteUrl(guild.id)}">Verificacao</a>
+    </article>`)
+    .join("");
+  return sitePage("Painel do Bot", "Veja os servidores conectados e adicione o bot em novos servidores.", `
+    <div class="actions">
+      <a class="button" href="${botInviteUrl()}">Adicionar bot</a>
+    </div>
+    <section class="grid">${guilds || "<p>Nenhum servidor carregado ainda.</p>"}</section>
+  `);
+}
+
+function sitePage(title, message, extra = "") {
+  return `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(config.brandName)} | ${escapeHtml(title)}</title>
+  <style>
+    body{margin:0;min-height:100vh;display:grid;place-items:center;background:#080812;color:#fff;font-family:Arial,Helvetica,sans-serif}
+    main{width:min(92vw,560px);border:1px solid #2a2550;background:#151429;padding:28px;border-radius:14px;box-shadow:0 20px 60px #0008}
+    h1{margin:0 0 12px;font-size:28px}
+    p{line-height:1.55;color:#d8d6ef}
+    .button{display:inline-block;margin-top:16px;background:#5865f2;color:#fff;text-decoration:none;padding:13px 18px;border-radius:8px;font-weight:700}
+    .actions{margin:8px 0 18px}
+    .grid{display:grid;gap:10px;margin-top:16px}
+    .card{display:flex;justify-content:space-between;gap:10px;align-items:center;border:1px solid #2a2550;background:#0f0e20;padding:12px;border-radius:10px}
+    .card span{color:#a9a5d6;font-size:13px}
+    .card a{color:#8ee6ff;text-decoration:none;font-weight:700}
+  </style>
+</head>
+<body><main><h1>${escapeHtml(title)}</h1><p>${message}</p>${extra}</main></body>
+</html>`;
+}
+
+function sendHtml(res, status, html) {
+  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(html);
+}
+
+function sendText(res, status, text) {
+  res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
+  res.end(text);
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 async function verifyMember(interaction) {
@@ -6038,6 +6348,37 @@ function servicesButtons(guild) {
   );
 }
 
+function sitePanelEmbed(guild) {
+  return baseEmbed(guild)
+    .setTitle(`${config.brandName} | Site`)
+    .setDescription([
+      "Acesse o site do bot para verificar membros, ver servidores conectados e adicionar o bot em outros servidores.",
+      "",
+      "Use o botao abaixo para abrir o painel web.",
+    ].join("\n"))
+    .addFields(
+      { name: "Verificacao", value: "Libere canais por login Discord OAuth.", inline: true },
+      { name: "Servidores", value: "Veja onde o bot esta conectado.", inline: true },
+      { name: "Adicionar bot", value: "Abra o convite oficial do bot.", inline: true },
+    )
+    .setColor(0x7b2cff);
+}
+
+function sitePanelButtons(guild) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel("Abrir site")
+      .setStyle(ButtonStyle.Link)
+      .setURL(siteDashboardUrl())
+      .setEmoji(emojiValue(guild, "pin") || undefined),
+    new ButtonBuilder()
+      .setLabel("Adicionar bot")
+      .setStyle(ButtonStyle.Link)
+      .setURL(botInviteUrl())
+      .setEmoji(emojiValue(guild, "add") || undefined),
+  );
+}
+
 function scriptsPanelEmbed(guild, scripts) {
   const latest = scripts.slice(-6).reverse();
   return baseEmbed(guild)
@@ -6240,6 +6581,33 @@ function verificationButtons(guild, roleId, link = "") {
   }
   row.addComponents(button(`verify:${roleId}`, "Verificar", ButtonStyle.Success, "approve", guild));
   return row;
+}
+
+function verificationSiteEmbed(guild, role, url, imageUrl) {
+  const embed = baseEmbed(guild)
+    .setTitle("Verificacao por Discord")
+    .setDescription([
+      "Para liberar o restante do servidor, clique no botao abaixo e autorize com sua conta Discord.",
+      "",
+      "O site verifica sua identidade pelo Discord OAuth e entrega o cargo automaticamente.",
+      "",
+      `Cargo liberado: ${role}`,
+    ].join("\n"))
+    .addFields(
+      { name: "Seguranca", value: "O bot usa apenas o login do Discord para confirmar seu ID. Nao pede senha.", inline: false },
+      { name: "Link", value: `[Abrir verificacao](${url})`, inline: false },
+    )
+    .setColor(0x00ff85);
+  if (imageUrl) embed.setImage(imageUrl);
+  return embed;
+}
+
+function verificationSiteButton(guild, url) {
+  return new ActionRowBuilder().addComponents(new ButtonBuilder()
+    .setLabel("Verificar pelo site")
+    .setStyle(ButtonStyle.Link)
+    .setURL(url)
+    .setEmoji(emojiValue(guild, "approve") || undefined));
 }
 
 function stockButtons(guild) {
