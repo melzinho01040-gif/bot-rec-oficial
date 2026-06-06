@@ -2269,7 +2269,7 @@ async function handleLogsCommand(interaction) {
           },
           {
             name: "Eventos registrados",
-            value: "Automod/mute por xingamento\nMensagem apagada/editada\nEntrada/saida de membros\nTickets\nRecrutamento/aprovacoes\nEventos, torneios e PVP",
+            value: "Automod/mute por xingamento\nMensagem apagada/editada\nEntrada/saida de membros\nVerificacao pelo site com IP\nTickets\nRecrutamento/aprovacoes\nEventos, torneios e PVP",
             inline: false,
           },
         )],
@@ -3143,6 +3143,7 @@ async function verifyMember(interaction) {
     fields: [
       ["Membro", `${interaction.user} (\`${interaction.user.id}\`)`],
       ["Cargo liberado", `${role} (\`${role.id}\`)`],
+      ["IP", "Indisponivel: verificacao feita pelo botao do Discord. Use `/verificacao site` para registrar IP."],
     ],
   });
   await interaction.reply(hidden({ content: `Verificacao concluida. Voce recebeu ${role} e o servidor foi liberado.` }));
