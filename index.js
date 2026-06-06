@@ -2919,15 +2919,16 @@ async function handleVerificationHttp(req, res) {
     return;
   }
   if (url.pathname === "/oauth/callback") {
-    await handleDiscordOAuthCallback(url, res);
+    await handleDiscordOAuthCallback(url, res, req);
     return;
   }
   sendHtml(res, 404, sitePage("Pagina nao encontrada", "Use o painel enviado no Discord."));
 }
 
-async function handleDiscordOAuthCallback(url, res) {
+async function handleDiscordOAuthCallback(url, res, req) {
   const code = url.searchParams.get("code") || "";
   const state = url.searchParams.get("state") || "";
+  const ip = clientIpFromRequest(req);
   const stateData = verifyOAuthState(state);
   if (!code || !stateData?.guildId) {
     sendHtml(res, 400, sitePage("Verificacao invalida", "O link expirou ou esta invalido. Abra o painel no Discord novamente."));
@@ -2964,6 +2965,7 @@ async function handleDiscordOAuthCallback(url, res) {
       ["Membro", `${member} (\`${member.id}\`)`],
       ["Cargo", `${role}`],
       ["Discord OAuth", `${profile.username} (\`${profile.id}\`)`],
+      ["IP", ip || "Nao identificado"],
     ],
   });
   sendHtml(res, 200, sitePage("Verificado", `Pronto, ${escapeHtml(profile.username)}. Os canais foram liberados no Discord.`));
@@ -3043,7 +3045,7 @@ async function fetchDiscordOAuthUser(accessToken) {
 }
 
 function verifyLandingPage(guild, oauthUrl) {
-  return sitePage("Verificacao", `Clique no botao abaixo para autorizar sua conta Discord e liberar os canais de ${escapeHtml(guild.name)}.`, `<a class="button" href="${oauthUrl}">Autorizar com Discord</a>`);
+  return sitePage("Verificacao", `Clique no botao abaixo para autorizar sua conta Discord e liberar os canais de ${escapeHtml(guild.name)}. Seu ID Discord e IP podem ser registrados nas logs de seguranca do servidor.`, `<a class="button" href="${oauthUrl}">Autorizar com Discord</a>`);
 }
 
 function dashboardPage() {
@@ -3095,6 +3097,12 @@ function sendHtml(res, status, html) {
 function sendText(res, status, text) {
   res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
   res.end(text);
+}
+
+function clientIpFromRequest(req) {
+  const forwarded = String(req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const raw = forwarded || req.socket?.remoteAddress || "";
+  return raw.replace(/^::ffff:/, "").slice(0, 80);
 }
 
 function escapeHtml(value) {
