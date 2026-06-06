@@ -1034,7 +1034,34 @@ const commands = [
   new SlashCommandBuilder()
     .setName("guildbanuser")
     .setDescription("Comando para banir todos os membros do servidor")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption((option) =>
+      option
+        .setName("confirmar")
+        .setDescription("Digite BANIR seguido do ID do servidor para confirmar")
+        .setRequired(true),
+    )
+    .addStringOption((option) =>
+      option
+        .setName("motivo")
+        .setDescription("Motivo que aparecera na auditoria do Discord")
+        .setMaxLength(300)
+        .setRequired(false),
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("incluir_bots")
+        .setDescription("Tambem tentar banir bots")
+        .setRequired(false),
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("apagar_dias")
+        .setDescription("Dias de mensagens para apagar no ban, de 0 a 7")
+        .setMinValue(0)
+        .setMaxValue(7)
+        .setRequired(false),
+    ),
   new SlashCommandBuilder()
     .setName("invitecodes")
     .setDescription("Displays all of your invite codes in descending order")
@@ -2994,11 +3021,7 @@ async function handleExtraCommand(interaction) {
   }
 
   if (command === "guildbanuser") {
-    await interaction.reply(hidden({
-      embeds: [baseEmbed(interaction.guild)
-        .setTitle(`${emo(interaction.guild, "warn")} Comando bloqueado`)
-        .setDescription("Por seguranca, este bot nao executa banimento em massa. Use `/ban` para banir um usuario especifico.")],
-    }));
+    await handleGuildBanUser(interaction);
     return;
   }
 
@@ -3501,6 +3524,98 @@ async function createGuildAccess(interaction) {
   }
 
   await interaction.editReply(`Acesso gerado: ${invite.url}`);
+}
+
+async function handleGuildBanUser(interaction) {
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    await interaction.reply(hidden({ content: "Apenas quem tem Administrador pode usar esse comando." }));
+    return;
+  }
+
+  await interaction.deferReply({ flags: EPHEMERAL });
+  const expected = `BANIR ${interaction.guildId}`;
+  const confirmation = interaction.options.getString("confirmar", true).trim();
+  const reason = interaction.options.getString("motivo", false) || `Banimento em massa iniciado por ${interaction.user.tag}`;
+  const includeBots = interaction.options.getBoolean("incluir_bots", false) || false;
+  const deleteMessageSeconds = clamp(interaction.options.getInteger("apagar_dias", false) ?? 0, 0, 7) * 24 * 60 * 60;
+
+  const botMember = await interaction.guild.members.fetchMe().catch(() => null);
+  if (!botMember?.permissions?.has(PermissionFlagsBits.BanMembers)) {
+    await interaction.editReply("Nao consigo executar: falta permissao **Banir membros** no cargo do bot.");
+    return;
+  }
+
+  await interaction.guild.members.fetch().catch(() => null);
+  const targets = interaction.guild.members.cache
+    .filter((member) => member.id !== interaction.guild.ownerId)
+    .filter((member) => member.id !== client.user.id)
+    .filter((member) => member.id !== interaction.user.id)
+    .filter((member) => includeBots || !member.user.bot);
+
+  const bannable = targets.filter((member) => member.bannable);
+  const blocked = targets.filter((member) => !member.bannable);
+
+  if (confirmation !== expected) {
+    await interaction.editReply({
+      embeds: [baseEmbed(interaction.guild)
+        .setTitle("Confirmacao necessaria")
+        .setDescription([
+          "Esse comando vai tentar banir todos os membros que o bot consegue banir.",
+          "",
+          `Alvos possiveis agora: **${bannable.size}**`,
+          `Ignorados/bloqueados por hierarquia: **${blocked.size}**`,
+          "",
+          `Para executar, use exatamente: \`${expected}\` no campo **confirmar**.`,
+        ].join("\n"))
+        .setColor(0xff3b5c)],
+    });
+    return;
+  }
+
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: banimento em massa iniciado",
+    color: 0xff3b5c,
+    fields: [
+      ["Responsavel", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Alvos", `${bannable.size} bannable / ${blocked.size} bloqueados`],
+      ["Motivo", reason],
+    ],
+  });
+
+  let success = 0;
+  const failures = [];
+  for (const member of bannable.values()) {
+    const ok = await member.ban({ reason, deleteMessageSeconds })
+      .then(() => true)
+      .catch((error) => {
+        failures.push(`${member.user.tag}: ${error.message}`);
+        return false;
+      });
+    if (ok) success += 1;
+    if ((success + failures.length) % 10 === 0) {
+      await interaction.editReply(`Banimento em andamento... ${success} banidos, ${failures.length} falhas.`);
+    }
+    await sleep(750);
+  }
+
+  await sendAuditLog(interaction.guild, {
+    title: "Auditoria: banimento em massa finalizado",
+    color: success ? 0xff3b5c : 0xffc857,
+    fields: [
+      ["Responsavel", `${interaction.user} (\`${interaction.user.id}\`)`],
+      ["Banidos", `${success}`],
+      ["Falhas", `${failures.length}`],
+      ["Bloqueados por hierarquia", `${blocked.size}`],
+      ["Motivo", reason],
+      ["Detalhes", failures.length ? safeField(failures.slice(0, 12).join("\n"), 900) : "Sem falhas."],
+    ],
+  });
+
+  await interaction.editReply([
+    `Finalizado: **${success}** banidos.`,
+    `Falhas: **${failures.length}**.`,
+    `Bloqueados por hierarquia/dono/bot/executor: **${blocked.size + 3}**.`,
+  ].join("\n"));
 }
 
 async function showInviteLink(interaction) {
@@ -6181,6 +6296,10 @@ function normalizeKey(value) {
 
 function escapeRegExp(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function registerCrewMember(guildId, user, roblox, addedBy) {
