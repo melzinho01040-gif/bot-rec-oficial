@@ -2946,23 +2946,33 @@ async function handleDiscordOAuthCallback(url, res, req) {
     return;
   }
 
-  const member = await guild.members.fetch(profile.id).catch(() => null);
-  if (!member) {
-    sendHtml(res, 403, sitePage("Entre no servidor", "Voce precisa estar no servidor antes de verificar."));
-    return;
-  }
   const botMember = await guild.members.fetchMe().catch(() => null);
   if (!botMember?.permissions?.has(PermissionFlagsBits.ManageRoles) || role.managed || botMember.roles.highest.comparePositionTo(role) <= 0) {
     sendHtml(res, 500, sitePage("Cargo sem permissao", "A equipe precisa colocar o cargo do bot acima do cargo de verificado."));
     return;
   }
 
-  await member.roles.add(role, `Verificacao OAuth concluida por ${profile.username} (${profile.id})`);
+  const member = await guild.members.fetch({ user: profile.id, force: true }).catch(() => null);
+  const roleResult = await addVerificationRoleByApi(guild.id, profile.id, role.id, `Verificacao OAuth concluida por ${profile.username} (${profile.id})`);
+  if (!roleResult.ok) {
+    sendHtml(res, 403, sitePage("Nao consegui liberar", `${roleResult.notMember ? "Voce precisa estar no servidor antes de verificar." : "O bot nao conseguiu entregar o cargo. Avise a equipe."}<br><small>${escapeHtml(roleResult.message)}</small>`));
+    await sendAuditLog(guild, {
+      title: "Auditoria: falha na verificacao pelo site",
+      color: 0xff3b5c,
+      fields: [
+        ["Discord OAuth", `${profile.username} (\`${profile.id}\`)`],
+        ["Cargo", `${role}`],
+        ["IP", ip || "Nao identificado"],
+        ["Erro", roleResult.message],
+      ],
+    });
+    return;
+  }
   await sendAuditLog(guild, {
     title: "Auditoria: membro verificado pelo site",
     color: 0x00ff85,
     fields: [
-      ["Membro", `${member} (\`${member.id}\`)`],
+      ["Membro", member ? `${member} (\`${member.id}\`)` : `<@${profile.id}> (\`${profile.id}\`)`],
       ["Cargo", `${role}`],
       ["Discord OAuth", `${profile.username} (\`${profile.id}\`)`],
       ["IP", ip || "Nao identificado"],
@@ -3042,6 +3052,24 @@ async function fetchDiscordOAuthUser(accessToken) {
   });
   if (!response.ok) throw new Error(`OAuth user HTTP ${response.status}`);
   return response.json();
+}
+
+async function addVerificationRoleByApi(guildId, userId, roleId, reason) {
+  const response = await fetch(`https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bot ${config.token}`,
+      "Content-Type": "application/json",
+      "X-Audit-Log-Reason": encodeURIComponent(reason).slice(0, 512),
+    },
+  }).catch((error) => ({ ok: false, status: 0, text: async () => error.message }));
+  if (response.ok) return { ok: true, message: "Cargo aplicado." };
+  const body = await response.text().catch(() => "");
+  return {
+    ok: false,
+    notMember: response.status === 404,
+    message: `Discord API HTTP ${response.status}: ${body.slice(0, 300)}`,
+  };
 }
 
 function verifyLandingPage(guild, oauthUrl) {
